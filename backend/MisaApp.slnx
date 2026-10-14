@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MisaApp.Api/MisaApp.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MisaApp.Api.Tests/MisaApp.Api.Tests.csproj" />
+  </Folder>
+</Solution>

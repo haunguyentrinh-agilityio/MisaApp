@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "ms-dotnettools.csdevkit",
+    "ms-azuretools.vscode-containers",
+    "ms-mssql.mssql",
+    "vitest.explorer",
+    "ms-playwright.playwright",
+    "oxc.oxc-vscode",
+    "editorconfig.editorconfig",
+    "anthropic.claude-code"
+  ]
+}
