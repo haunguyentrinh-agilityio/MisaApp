@@ -1,0 +1,34 @@
+# Secrets
+.env
+*.local.json
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vs/
+*.user
+*.suo
+.idea/
+
+# .NET
+**/bin/
+**/obj/
+**/TestResults/
+*.trx
+
+# Node / Vite
+**/node_modules/
+**/dist/
+**/coverage/
+**/.vite/
+*.tsbuildinfo
+*.log
+
+# Playwright
+**/playwright-report/
+**/test-results/
+**/blob-report/
+**/playwright/.cache/
+
+# pnpm store (if created inside a bind-mounted container)
+**/.pnpm-store/
