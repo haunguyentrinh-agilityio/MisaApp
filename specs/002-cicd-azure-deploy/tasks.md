@@ -257,7 +257,9 @@ shared registry and nonprod SQL that every story needs.
   assignments from research.md R7 and the data-model "Identities" table. Each identity lives in
   `rg-misaapp-shared`:
   - **`id-misaapp-gh-ci`**
-    - Subjects: `repo:<repo>:pull_request` and `repo:<repo>:ref:refs/heads/{develop,stag,main}`.
+    - Subjects: `<prefix>:pull_request` and `<prefix>:ref:refs/heads/{develop,stag,main}`, where
+      `<prefix>` is the repo's `sub_claim_prefix` (immutable `repo:<owner>@<id>/<repo>@<id>` for
+      new repositories). The other identities use the same prefix.
   - **`id-misaapp-gh-build`**
     - Subjects: `ref:refs/heads/{develop,stag,main}`.
     - Roles: AcrPush on `rg-misaapp-shared`.

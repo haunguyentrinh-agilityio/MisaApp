@@ -124,6 +124,13 @@ federated credentials and roles, the GitHub environments, rulesets and variables
 `infra/shared` apply. It is idempotent. Then set the production Gemini key as shown above and push to
 `develop` to create the develop environment.
 
+Federated credential subjects use the prefix GitHub reports for the repository
+(`gh api repos/<owner>/<repo>/actions/oidc/customization/sub`). New repositories use immutable
+subjects such as `repo:<owner>@<owner-id>/<repo>@<repo-id>:pull_request`. If `azure/login` fails with
+`AADSTS700213: No matching federated identity record`, the subject format changed (for example after
+a rename, transfer, or switching immutable subjects on or off): re-run the bootstrap to update the
+credentials.
+
 ## Local development on Azure SQL
 
 There is no local SQL container. Each developer has a database on the shared nonprod server:

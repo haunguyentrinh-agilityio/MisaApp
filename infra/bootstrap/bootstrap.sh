@@ -104,7 +104,16 @@ az account set --subscription "$SUBSCRIPTION"
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
 gh api "repos/$REPO" --jq .full_name >/dev/null || { echo "GitHub repository $REPO not found or not accessible" >&2; exit 1; }
+# The OIDC subject prefix GitHub presents: repo:<owner>/<repo>, or repo:<owner>@<id>/<repo>@<id> when
+# the repository uses immutable subjects (the default for new repositories).
+oidc_sub=$(gh api "repos/$REPO/actions/oidc/customization/sub")
+[[ "$(jq -r .use_default <<<"$oidc_sub")" == "true" ]] || {
+  echo "$REPO customizes its OIDC subject claim keys; the federated credentials below assume the default" >&2
+  exit 1
+}
+SUBJECT_PREFIX=$(jq -r --arg d "repo:$REPO" '.sub_claim_prefix // $d' <<<"$oidc_sub")
 echo "  subscription $SUBSCRIPTION_ID, tenant $TENANT_ID, repo $REPO"
+echo "  OIDC subject prefix $SUBJECT_PREFIX"
 
 # ---------------------------------------------------------------------------------------------
 section "Part 1: Azure foundation"
@@ -183,9 +192,9 @@ ensure_identity() {
   PRINCIPAL_ID[$name]=$(az identity show -n "$name" -g "$SHARED_RG" --query principalId -o tsv)
 }
 
-# ensure_federation <identity> <credential-name> <subject-suffix>; subject = repo:<repo>:<suffix>
+# ensure_federation <identity> <credential-name> <subject-suffix>; subject = <SUBJECT_PREFIX>:<suffix>
 ensure_federation() {
-  local identity=$1 name=$2 subject="repo:$REPO:$3" current
+  local identity=$1 name=$2 subject="$SUBJECT_PREFIX:$3" current
   current=$(az identity federated-credential show --identity-name "$identity" -g "$SHARED_RG" -n "$name" \
     --query subject -o tsv 2>/dev/null || true)
   if [[ "$current" == "$subject" ]]; then
