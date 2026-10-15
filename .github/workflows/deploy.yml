@@ -427,9 +427,16 @@ jobs:
         id: migrate
         if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push'
         run: |
-          execution=$(az containerapp job start -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" \
-            --container-name migrate --image "$ACR_NAME.azurecr.io/misaapp-migrator:$IMAGE_TAG" \
-            --query name -o tsv)
+          # A start request's template replaces the job's, and `az containerapp job start --image`
+          # sends one without the env vars. Send the job's own template with only the image swapped.
+          job_id=$(az resource show -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" --resource-type Microsoft.App/jobs --query id -o tsv)
+          template=$(az rest --method get --url "https://management.azure.com$job_id?api-version=2024-03-01" \
+            --query properties.template -o json |
+            jq -c --arg image "$ACR_NAME.azurecr.io/misaapp-migrator:$IMAGE_TAG" \
+              '{containers: [.containers[] | if .name == "migrate" then .image = $image else . end
+                | .resources |= with_entries(select(.value != ""))]}')
+          execution=$(az rest --method post --url "https://management.azure.com$job_id/start?api-version=2024-03-01" \
+            --body "$template" --query name -o tsv)
           echo "execution=$execution" >>"$GITHUB_OUTPUT"
           if ! bash ../scripts/wait-job-execution.sh "$RESOURCE_GROUP" "$MIGRATE_JOB" "$execution"; then
             az containerapp job stop -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" --job-execution-name "$execution" -o none || true

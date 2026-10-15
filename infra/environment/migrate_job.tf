@@ -1,5 +1,5 @@
-# Runs backend/deploy/migrate.sh. deploy.yml starts one execution per deploy with
-# `az containerapp job start --image …misaapp-migrator:<sha>` before the apps are updated, so a
+# Runs backend/deploy/migrate.sh. deploy.yml starts one execution per deploy with this job's template
+# and the image swapped to misaapp-migrator:<sha>, before the apps are updated, so a
 # failed migration leaves the previous revision serving.
 resource "azurerm_container_app_job" "migrate" {
   name                         = local.migrate_job_name
