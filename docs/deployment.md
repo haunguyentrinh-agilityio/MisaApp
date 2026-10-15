@@ -120,8 +120,9 @@ infra/bootstrap/bootstrap.sh --subscription <id> --location southeastasia --suff
 ```
 
 It creates the resource groups, the Terraform state storage, the managed identities with their
-federated credentials and roles, the GitHub environments, rulesets and variables, and the first
-`infra/shared` apply. It is idempotent. Then set the production Gemini key as shown above and push to
+federated credentials and roles, the GitHub environments, rulesets and variables, an empty Terraform
+state for each environment (the plan identities can only read state), and the first `infra/shared`
+apply. It is idempotent. Then set the production Gemini key as shown above and push to
 `develop` to create the develop environment.
 
 Federated credential subjects use the prefix GitHub reports for the repository
@@ -143,7 +144,9 @@ There is no local SQL container. Each developer has a database on the shared non
 4. Copy `.env.example` to `.env` and fill in `SQL_CONNECTION_STRING`. Get the password with
    `az keyvault secret show --vault-name kv-misaapp-np-<suffix> --name sql-admin-password --query value -o tsv`
    and paste it into `.env` directly; don't put it in shell history or commit it.
-5. `docker compose up -d --build`. The backend applies migrations to your database on startup.
+5. `docker compose up -d --build`. The backend applies migrations to your database on startup. It
+   refuses to start if the database doesn't exist yet (wait for the develop deploy from step 1),
+   because EF Core would otherwise create it as a billed provisioned database.
 
 For `dotnet run` outside Docker, set the same connection string with
 `dotnet user-secrets set "ConnectionStrings:Default" "<connection string>" --project backend/src/MisaApp.Api`.
@@ -167,7 +170,9 @@ For `dotnet run` outside Docker, set the same connection string with
 | Apply fails with a revision that never becomes ready | Check the API's console logs (startup errors, database access). Traffic stays on the previous revision. |
 | `Key Vault secret gemini-api-key missing in …` | Set the secret as shown above, then re-run the job. |
 | `Terraform state for <env> unreachable` | Check the state storage account and the deploy identity's role on `tfstate-<env>`. |
+| `plan` fails with `failed to lock azure state` … `AuthorizationPermissionMismatch` | The environment's `environment.tfstate` doesn't exist yet, and the read-only plan identity can't create it. Re-run the bootstrap (it creates the empty state), then re-run the workflow. |
 | `Superseded by <sha>` | Expected: a newer commit is on the branch. Approve the newer run instead. |
+| `Apply infra/shared` fails with `Resource already exists` for `developer_database["<alias>"]` | Something other than Terraform created `sqldb-misaapp-dev-<alias>`, usually a backend started before the database existed. It isn't on the free offer, which can only be chosen at creation, so don't import it: delete it (`az sql db delete -g rg-misaapp-shared -s sql-misaapp-nonprod-<suffix> -n sqldb-misaapp-dev-<alias>`) and re-run the deploy. |
 | `state changed since approved plan` | Another deploy finished first. Re-run all jobs and approve the new plan. |
 | `Smoke failed: rolled back to <sha>` | Download the smoke report artifact; fix forward with a new PR. |
 | `plan` fails on `prevent_destroy` | The change would delete a database, SQL server or Key Vault. Rework the change. |
