@@ -1,0 +1,11 @@
+# CI E2E against the images a deploy run built (ci.yml, job e2e, when image_tag is set):
+#   docker compose -f compose.yaml -f compose.ci.yaml up -d --pull always backend frontend
+# Needs ACR_LOGIN_SERVER and IMAGE_TAG. Playwright still builds locally.
+services:
+  backend:
+    build: !reset null
+    image: ${ACR_LOGIN_SERVER:?set ACR_LOGIN_SERVER}/misaapp-api:${IMAGE_TAG:?set IMAGE_TAG}
+
+  frontend:
+    build: !reset null
+    image: ${ACR_LOGIN_SERVER:?set ACR_LOGIN_SERVER}/misaapp-web:${IMAGE_TAG:?set IMAGE_TAG}

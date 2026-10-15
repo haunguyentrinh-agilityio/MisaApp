@@ -1,0 +1,43 @@
+openapi: 3.1.0
+info:
+  title: MisaApp Version API
+  version: 1.0.0
+  description: >
+    Reports which build an environment is running (FR-006, SC-005). Used by the post-deploy smoke
+    test. Feature folder: backend/src/MisaApp.Api/Features/Version/.
+paths:
+  /api/version:
+    get:
+      operationId: getVersion
+      summary: Commit and environment of the running API
+      responses:
+        '200':
+          description: Build information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+              examples:
+                azure:
+                  value: { commit: 3f9c2d0e8b1a4c5d6e7f8091a2b3c4d5e6f70812, environment: production }
+                local:
+                  value: { commit: dev, environment: local }
+components:
+  schemas:
+    VersionResponse:
+      type: object
+      additionalProperties: false
+      required: [commit, environment]
+      properties:
+        commit:
+          type: string
+          description: >
+            Full git commit SHA baked into the image at build time (`App:Commit`, from build arg
+            SOURCE_COMMIT). "dev" when built locally without the arg.
+          minLength: 1
+        environment:
+          type: string
+          description: >
+            Deployment name from `App:Environment` (develop | stage | production in Azure,
+            "local" by default).
+          minLength: 1

@@ -1,12 +1,3 @@
-<!--
-Sync Impact Report
-- Version change: 1.0.0 → 1.0.1 (PATCH: project renamed WebApp → MisaApp; no rule changes)
-- Modified principles: I. Feature-Sliced Code (path now `backend/src/MisaApp.Api/...`)
-- Added sections: none
-- Removed sections: none
-- Follow-up TODOs: none
--->
-
 # MisaApp Constitution
 
 ## Core Principles
@@ -36,7 +27,7 @@ one-to-one onto code.
 - Every acceptance scenario in a spec MUST map to at least one automated test in `tasks.md`.
 
 Rationale: the three layers are cheap to run and together cover logic, UI, and the real stack
-(SQL Server, nginx, migrations).
+(Azure SQL, nginx, migrations).
 
 ### III. Explicit API Contract
 
@@ -59,16 +50,23 @@ sides rather than by versioning.
 
 Rationale: keeps tests deterministic and free, and keeps the provider swappable.
 
-### V. Reproducible Docker Environment
+### V. Reproducible Docker Environment on Azure SQL
 
-- Every service (frontend, backend, SQL Server, Playwright) MUST build and run through
-  `compose.yaml`; `compose.dev.yaml` is the hot-reload overlay.
+- Every app service (frontend, backend, Playwright) MUST build and run through `compose.yaml`;
+  `compose.dev.yaml` is the hot-reload overlay.
+- The database is Azure SQL Database in every environment, including local development and CI.
+  No SQL Server container is part of the stack; the backend gets its connection string from
+  configuration (`SQL_CONNECTION_STRING` in `.env` → `ConnectionStrings__Default`).
+- Local and CI stacks MUST use databases isolated from deployed environments; they MUST NOT
+  connect to the develop, stage, or production database.
 - A feature is not done until it works on the production-like stack
-  (`docker compose up -d --build`), not just the dev servers.
+  (`docker compose up -d --build`) against Azure SQL, not just the dev servers.
 - Toolchain versions are pinned: .NET 10 SDK (`global.json`), Node >= 24 and pnpm
   (`packageManager`), the Playwright image tag matching `@playwright/test`.
 
-Rationale: "works on my machine" is ruled out when every check runs against the same images.
+Rationale: "works on my machine" is ruled out when every check runs against the same images, and
+running Azure SQL everywhere means the engine, its limits, and its behavior are the same locally as
+in production. The accepted trade-off: local development and E2E runs need network access to Azure.
 
 ## Security & Data
 
@@ -102,4 +100,4 @@ Rationale: "works on my machine" is ruled out when every check runs against the 
 - `/speckit-analyze` treats a conflict with a MUST in this document as CRITICAL. A justified
   exception is recorded in the plan's Complexity Tracking table, never silently.
 
-**Version**: 1.0.1 | **Ratified**: 2026-10-14 | **Last Amended**: 2026-10-14
+**Version**: 2.0.0 | **Ratified**: 2026-10-14 | **Last Amended**: 2026-10-14

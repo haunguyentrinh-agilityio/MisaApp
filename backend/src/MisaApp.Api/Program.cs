@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using MisaApp.Api.Data;
 using MisaApp.Api.Features.Chat;
+using MisaApp.Api.Features.Version;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +21,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
 builder.Services.AddChat(builder.Configuration);
+builder.Services.AddVersion(builder.Configuration);
 
 var app = builder.Build();
 
@@ -44,6 +46,7 @@ if (app.Environment.IsDevelopment())
 
 app.MapHealthChecks("/api/health");
 app.MapChatEndpoints();
+app.MapVersionEndpoints();
 
 app.Run();
 
