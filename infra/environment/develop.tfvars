@@ -8,4 +8,4 @@ web_min_replicas       = 0
 web_max_replicas       = 2
 api_min_replicas       = 0
 api_max_replicas       = 2
-gemini_enabled         = false
+gemini_enabled         = true
