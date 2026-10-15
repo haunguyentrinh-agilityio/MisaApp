@@ -32,3 +32,11 @@ Thumbs.db
 
 # pnpm store (if created inside a bind-mounted container)
 **/.pnpm-store/
+
+# Terraform (.terraform.lock.hcl stays committed)
+**/.terraform/
+*.tfplan
+tfplan*
+*.tfstate
+*.tfstate.*
+crash.log

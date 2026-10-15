@@ -1,0 +1,207 @@
+# Quality checks. Each job is a required status check on develop, stag and main (FR-023), and
+# deploy.yml calls this workflow as its gate. Nothing here touches develop, stage or production;
+# e2e only creates and drops one sqldb-misaapp-ci-* database on the nonprod server.
+name: ci
+
+on:
+  pull_request:
+    branches: [develop, stag, main]
+  workflow_call:
+    inputs:
+      image_tag:
+        description: Commit SHA of images already in the registry; e2e runs them instead of building.
+        type: string
+        default: ""
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: backend/global.json
+      - run: dotnet build -c Release -warnaserror
+      - run: dotnet test -c Release --no-build
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.node-version
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  infra:
+    name: infra
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra
+      - name: terraform validate
+        run: |
+          for root in infra/shared infra/environment; do
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate
+          done
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.64.0
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin download without anonymous rate limits
+        run: |
+          config="$GITHUB_WORKSPACE/infra/.tflint.hcl"
+          tflint --init --config="$config"
+          for root in infra/shared infra/environment; do
+            tflint --chdir="$root" --config="$config"
+          done
+      - name: trivy config
+        # Image pinned by digest (aquasec/trivy:0.75.0) rather than a third-party action.
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE/infra:/infra:ro"
+          aquasec/trivy@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          config --severity HIGH,CRITICAL --exit-code 1 /infra
+      - name: actionlint
+        # rhysd/actionlint:1.7.12; runs shellcheck on run: blocks too.
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo
+          rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -color
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        env:
+          VERSION: 8.30.1
+          SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "$SHA256  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+      - name: gitleaks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$BASE_SHA" ]]; then
+            /tmp/gitleaks git --redact --no-banner --log-opts="$BASE_SHA..HEAD" .
+          else
+            /tmp/gitleaks git --redact --no-banner .
+          fi
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      NAME_SUFFIX: ${{ vars.NAME_SUFFIX }}
+      DB_NAME: sqldb-misaapp-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      RULE_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      # Fork PRs get no OIDC token for this repository, so they can't reach Azure.
+      - name: Fork check
+        id: fork
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::notice::e2e skipped: pull requests from forks have no Azure access. A maintainer re-runs it from a branch."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.fork.outputs.skip != 'true'
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        if: steps.fork.outputs.skip != 'true'
+        with:
+          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Create ephemeral database
+        id: db
+        if: steps.fork.outputs.skip != 'true'
+        run: bash infra/scripts/ci-database.sh create "$DB_NAME" "$RULE_NAME"
+      - name: Connection string
+        if: steps.fork.outputs.skip != 'true'
+        run: |
+          pw=$(az keyvault secret show --vault-name "kv-misaapp-np-$NAME_SUFFIX" --name sql-admin-password --query value -o tsv)
+          echo "::add-mask::$pw"
+          echo "SQL_CONNECTION_STRING=Server=tcp:sql-misaapp-nonprod-$NAME_SUFFIX.database.windows.net,1433;Database=$DB_NAME;User Id=misaappadmin;Password=$pw;Encrypt=True" >> "$GITHUB_ENV"
+      # No GEMINI_API_KEY: the API uses its echo model, so assertions never depend on Gemini (FR-004).
+      - name: Start stack (build)
+        if: steps.fork.outputs.skip != 'true' && inputs.image_tag == ''
+        run: docker compose up -d --build backend frontend
+      # Deploy runs test the exact images they are about to ship.
+      - name: Start stack (registry images)
+        if: steps.fork.outputs.skip != 'true' && inputs.image_tag != ''
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          az acr login --name "$ACR_NAME"
+          export ACR_LOGIN_SERVER="$ACR_NAME.azurecr.io"
+          docker compose -f compose.yaml -f compose.ci.yaml up -d --pull always backend frontend
+      - name: Playwright
+        if: steps.fork.outputs.skip != 'true'
+        run: docker compose --profile e2e run --rm --build playwright
+      - name: Upload Playwright report
+        if: always() && steps.fork.outputs.skip != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ github.run_attempt }}
+          path: frontend/e2e/playwright-report
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Container logs
+        if: failure() && steps.fork.outputs.skip != 'true'
+        run: docker compose logs --no-color backend frontend
+      - name: Drop ephemeral database
+        if: always() && steps.fork.outputs.skip != 'true'
+        run: bash infra/scripts/ci-database.sh drop "$DB_NAME" "$RULE_NAME"

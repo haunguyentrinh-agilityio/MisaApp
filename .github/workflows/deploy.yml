@@ -1,0 +1,529 @@
+# Release pipeline (specs/002-cicd-azure-deploy/contracts/pipeline.md).
+#   push:     build ─► checks ─► plan ─► deploy[environment]
+#   dispatch: verify-tag ─► plan ─► deploy[environment]   (rollback / redeploy of a registry tag)
+# develop deploys on its own; stage and production wait on their GitHub Environment's reviewers
+# before `deploy` starts, and then apply exactly the plan shown in the `plan` job's summary.
+name: deploy
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+  && format('Rollback {0} → {1}: {2}', inputs.environment, inputs.image_tag, inputs.reason)
+  || format('Deploy {0} @ {1}',
+  (github.ref_name == 'main' && 'production') || (github.ref_name == 'stag' && 'stage') || github.ref_name,
+  github.sha) }}
+
+on:
+  push:
+    branches: [develop, stag, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy. Run from its branch (develop, stag or main).
+        type: choice
+        required: true
+        options: [develop, stage, production]
+      image_tag:
+        description: Full commit SHA whose images are already in the registry.
+        type: string
+        required: true
+      reason:
+        description: Why this rollback or redeploy is needed (shown in the run name).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: 1.16.5
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  # Terraform (azurerm backend, azurerm and azapi providers) signs in with the job's OIDC token.
+  # Each job sets ARM_CLIENT_ID to its own identity.
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_suffix: ${{ vars.NAME_SUFFIX }}
+  TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+  TFSTATE_ACCOUNT: ${{ vars.TFSTATE_ACCOUNT }}
+  ACR_NAME: ${{ vars.ACR_NAME }}
+
+jobs:
+  # Maps the branch (push) or the input (dispatch) to one environment. Every later name and identity
+  # comes from these outputs, so a stag run can't touch develop or production (FR-008, FR-016).
+  resolve:
+    name: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.map.outputs.environment }}
+      branch: ${{ steps.map.outputs.branch }}
+      env_code: ${{ steps.map.outputs.env_code }}
+      plan_client_id: ${{ steps.map.outputs.plan_client_id }}
+      image_tag: ${{ steps.map.outputs.image_tag }}
+    steps:
+      - id: map
+        env:
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+          PLAN_DEVELOP: ${{ vars.AZURE_PLAN_CLIENT_ID_DEVELOP }}
+          PLAN_STAGE: ${{ vars.AZURE_PLAN_CLIENT_ID_STAGE }}
+          PLAN_PRODUCTION: ${{ vars.AZURE_PLAN_CLIENT_ID_PRODUCTION }}
+        run: |
+          declare -A env_of=([develop]=develop [stag]=stage [main]=production)
+          declare -A branch_of=([develop]=develop [stage]=stag [production]=main)
+          declare -A code_of=([develop]=dev [stage]=stg [production]=prd)
+          declare -A plan_of=([develop]="$PLAN_DEVELOP" [stage]="$PLAN_STAGE" [production]="$PLAN_PRODUCTION")
+
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            environment=$INPUT_ENVIRONMENT
+            branch=${branch_of[$environment]}
+            if [[ "$GITHUB_REF" != "refs/heads/$branch" ]]; then
+              echo "::error::Run this from branch $branch (gh workflow run deploy.yml --ref $branch -f environment=$environment -f image_tag=<sha> -f reason=<why>)"
+              exit 1
+            fi
+            image_tag=$INPUT_IMAGE_TAG
+          else
+            environment=${env_of[$GITHUB_REF_NAME]:-}
+            if [[ -z "$environment" ]]; then
+              echo "::error::Branch $GITHUB_REF_NAME does not map to an environment (develop, stag, main)"
+              exit 1
+            fi
+            branch=$GITHUB_REF_NAME
+            image_tag=$GITHUB_SHA
+          fi
+
+          plan_client_id=${plan_of[$environment]}
+          if [[ -z "$plan_client_id" ]]; then
+            echo "::error::Repository variable AZURE_PLAN_CLIENT_ID_${environment^^} is not set (run infra/bootstrap/bootstrap.sh)"
+            exit 1
+          fi
+          {
+            echo "environment=$environment"
+            echo "branch=$branch"
+            echo "env_code=${code_of[$environment]}"
+            echo "plan_client_id=$plan_client_id"
+            echo "image_tag=$image_tag"
+          } >>"$GITHUB_OUTPUT"
+          echo "Resolved $GITHUB_EVENT_NAME on $GITHUB_REF_NAME → environment $environment, image tag $image_tag"
+
+  # Images are built once per commit; every later step (E2E, deploy, rollback) uses these tags.
+  build:
+    name: build
+    needs: resolve
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_BUILD_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr login --name "$ACR_NAME"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # provenance/sbom off: plain image manifests, so the registry purge task's --untagged never
+      # removes a manifest that a tagged index still points to.
+      - name: misaapp-api
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          target: runtime
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.REGISTRY }}/misaapp-api:${{ github.sha }}
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=misaapp-api
+          cache-to: type=gha,mode=max,scope=misaapp-api
+      - name: misaapp-migrator
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          target: migrator
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.REGISTRY }}/misaapp-migrator:${{ github.sha }}
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=misaapp-migrator
+          cache-to: type=gha,mode=max,scope=misaapp-migrator
+      - name: misaapp-web
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: frontend
+          target: runtime
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.REGISTRY }}/misaapp-web:${{ github.sha }}
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=misaapp-web
+          cache-to: type=gha,mode=max,scope=misaapp-web
+
+  # The same five checks as on the PR; E2E runs the images `build` just pushed.
+  checks:
+    name: checks
+    needs: [resolve, build]
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+    with:
+      image_tag: ${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+
+  verify-tag:
+    name: verify-tag
+    needs: resolve
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
+    steps:
+      - name: Check tag format
+        run: |
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::image_tag must be a full 40-character lower-case commit SHA"
+            exit 1
+          fi
+      # The CI identity has AcrPull on the shared registry.
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Check images exist
+        run: |
+          for repo in misaapp-api misaapp-web misaapp-migrator; do
+            if ! az acr repository show --name "$ACR_NAME" --image "$repo:$IMAGE_TAG" -o none; then
+              echo "::error::Image tag $IMAGE_TAG not found in registry ($repo)"
+              exit 1
+            fi
+          done
+          echo "All images for $IMAGE_TAG are in $ACR_NAME."
+
+  # Read-only: the plan identity can read state and resources but change nothing (-lock=false).
+  plan:
+    name: plan
+    needs: [resolve, build, checks, verify-tag]
+    if: >-
+      always() && !cancelled() && needs.resolve.result == 'success'
+      && (needs.checks.result == 'success' || needs.verify-tag.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      state_serial: ${{ steps.plan.outputs.state_serial }}
+      artifact: ${{ steps.plan.outputs.artifact }}
+    env:
+      ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+      IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
+      ARM_CLIENT_ID: ${{ needs.resolve.outputs.plan_client_id }}
+    defaults:
+      run:
+        working-directory: infra/environment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ needs.resolve.outputs.plan_client_id }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: terraform init
+        run: >-
+          terraform init -input=false
+          -backend-config="storage_account_name=$TFSTATE_ACCOUNT"
+          -backend-config="container_name=tfstate-$ENVIRONMENT"
+          -backend-config="key=environment.tfstate"
+      - name: terraform plan
+        id: plan
+        run: |
+          # deploy compares this serial before applying, so a plan made stale by another deploy is
+          # never applied silently.
+          serial=$(terraform state pull | jq -r '.serial // empty' || true)
+          artifact="tfplan-$ENVIRONMENT-$GITHUB_RUN_ATTEMPT"
+          {
+            echo "state_serial=$serial"
+            echo "artifact=$artifact"
+          } >>"$GITHUB_OUTPUT"
+
+          terraform plan -lock=false -input=false -var-file="$ENVIRONMENT.tfvars" \
+            -var "image_tag=$IMAGE_TAG" -out=tfplan
+          {
+            echo "<details><summary>Planned changes for $ENVIRONMENT (approving deploys exactly this plan)</summary>"
+            echo
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+            echo '</details>'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.plan.outputs.artifact }}
+          path: infra/environment/tfplan
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    name: deploy
+    needs: [resolve, plan]
+    # Explicit: `plan` runs under always(), and a skipped build/verify-tag would otherwise skip this.
+    if: always() && !cancelled() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: ${{ needs.resolve.outputs.environment }}
+      url: ${{ steps.out.outputs.web_url }}
+    concurrency:
+      group: deploy-${{ needs.resolve.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+      BRANCH: ${{ needs.resolve.outputs.branch }}
+      ENV_CODE: ${{ needs.resolve.outputs.env_code }}
+      IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
+      ARM_CLIENT_ID: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+      RESOURCE_GROUP: rg-misaapp-${{ needs.resolve.outputs.environment }}
+      MIGRATE_JOB: caj-misaapp-${{ needs.resolve.outputs.environment }}-migrate
+      AZURE_EXTENSION_USE_DYNAMIC_INSTALL: yes_without_prompt
+    defaults:
+      run:
+        working-directory: infra/environment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 1. An approval of an older run must not roll the environment back to that older commit.
+      - name: Superseded guard
+        id: guard
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha)
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "::notice::Superseded by $head; this run deploys nothing."
+            echo "Superseded by $head: \`$BRANCH\` moved on, so this run deployed nothing." >>"$GITHUB_STEP_SUMMARY"
+            echo "superseded=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        if: steps.guard.outputs.superseded != 'true'
+        with:
+          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        if: steps.guard.outputs.superseded != 'true'
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # 2. Preflight: state reachable.
+      - name: Preflight
+        if: steps.guard.outputs.superseded != 'true'
+        run: |
+          if ! terraform init -input=false \
+            -backend-config="storage_account_name=$TFSTATE_ACCOUNT" \
+            -backend-config="container_name=tfstate-$ENVIRONMENT" \
+            -backend-config="key=environment.tfstate"; then
+            echo "::error::Terraform state for $ENVIRONMENT unreachable ($TFSTATE_ACCOUNT/tfstate-$ENVIRONMENT)"
+            exit 1
+          fi
+
+      # 3. Shared registry, nonprod SQL and Key Vault follow develop.
+      - name: Apply infra/shared
+        if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push' && env.ENVIRONMENT == 'develop'
+        working-directory: infra/shared
+        env:
+          CI_PRINCIPAL_ID: ${{ vars.AZURE_CI_PRINCIPAL_ID }}
+        run: |
+          terraform init -input=false \
+            -backend-config="storage_account_name=$TFSTATE_ACCOUNT" \
+            -backend-config="container_name=tfstate-shared" \
+            -backend-config="key=shared.tfstate"
+          terraform apply -auto-approve -input=false -var "ci_principal_id=$CI_PRINCIPAL_ID"
+
+      # 4. The tag the API runs now: the automatic rollback target. Empty on the first deployment.
+      - name: Capture previous version
+        id: capture
+        if: steps.guard.outputs.superseded != 'true'
+        run: |
+          prev=$(terraform output -raw image_tag 2>/dev/null || true)
+          [[ "$prev" =~ ^[0-9a-f]{40}$ ]] || prev=""
+          echo "prev=$prev" >>"$GITHUB_OUTPUT"
+          echo "Previous commit: ${prev:-none (first deployment)}"
+          if [[ -z "$prev" && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            echo "::error::Nothing is deployed to $ENVIRONMENT yet, so there is nothing to roll back."
+            exit 1
+          fi
+
+      # 5. First deployment: the migrate job and database must exist before migrating, and the apps
+      #    need the migrated schema, so create those first and re-plan the rest (design correction 3).
+      - name: First deployment
+        id: first
+        if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push' && steps.capture.outputs.prev == ''
+        run: |
+          terraform apply -auto-approve -input=false -var-file="$ENVIRONMENT.tfvars" -var "image_tag=$IMAGE_TAG" \
+            -target=azurerm_container_app_job.migrate \
+            -target=azurerm_mssql_database.main \
+            -target=azapi_resource.free_database
+          echo "First deployment: re-planned after targeted apply." >>"$GITHUB_STEP_SUMMARY"
+
+      # Runs after the first-deployment step, which creates the vault. Lists names only
+      # (Key Vault Reader); the value is never read.
+      - name: Gemini secret preflight
+        if: steps.guard.outputs.superseded != 'true'
+        run: |
+          if ! grep -Eq '^\s*gemini_enabled\s*=\s*true' "$ENVIRONMENT.tfvars"; then
+            echo "gemini_enabled is false for $ENVIRONMENT: the API uses its echo model."
+            exit 0
+          fi
+          vault="kv-misaapp-$ENV_CODE-$TF_VAR_suffix"
+          found=$(az keyvault secret list --vault-name "$vault" --query "length([?name=='gemini-api-key'])" -o tsv)
+          if [[ "$found" != "1" ]]; then
+            echo "::error::Key Vault secret gemini-api-key missing in $vault"
+            exit 1
+          fi
+          echo "gemini-api-key exists in $vault."
+
+      # 6. Migrate before the new revision starts. On failure nothing is applied and the previous
+      #    version keeps serving.
+      - name: Migrate database
+        id: migrate
+        if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push'
+        run: |
+          execution=$(az containerapp job start -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" \
+            --container-name migrate --image "$ACR_NAME.azurecr.io/misaapp-migrator:$IMAGE_TAG" \
+            --query name -o tsv)
+          echo "execution=$execution" >>"$GITHUB_OUTPUT"
+          if ! bash ../scripts/wait-job-execution.sh "$RESOURCE_GROUP" "$MIGRATE_JOB" "$execution"; then
+            az containerapp job stop -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" --job-execution-name "$execution" -o none || true
+            echo "Migration $execution failed: nothing was applied, the previous version keeps serving." >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.guard.outputs.superseded != 'true'
+        with:
+          name: ${{ needs.plan.outputs.artifact }}
+          path: infra/environment
+
+      # 7. Apply the approved plan. It is re-planned only after a first-deployment targeted apply, or
+      #    on develop (no approval) when another deploy changed the state since the plan.
+      - name: Apply
+        id: apply
+        if: steps.guard.outputs.superseded != 'true'
+        env:
+          FIRST_DEPLOYMENT: ${{ steps.first.outcome == 'success' }}
+          PLANNED_SERIAL: ${{ needs.plan.outputs.state_serial }}
+        run: |
+          replan() {
+            terraform plan -input=false -var-file="$ENVIRONMENT.tfvars" -var "image_tag=$IMAGE_TAG" -out=tfplan-fresh
+            terraform apply -input=false tfplan-fresh
+          }
+          current=$(terraform state pull | jq -r '.serial // empty' || true)
+          if [[ "$FIRST_DEPLOYMENT" == true ]]; then
+            replan
+          elif [[ "$current" != "$PLANNED_SERIAL" ]]; then
+            if [[ "$ENVIRONMENT" != develop ]]; then
+              echo "::error::The $ENVIRONMENT state changed after this plan was made (another deploy ran). Re-run all jobs to plan and approve again."
+              exit 1
+            fi
+            echo "State changed since the plan (another deploy finished first): re-planned." >>"$GITHUB_STEP_SUMMARY"
+            replan
+          else
+            terraform apply -input=false tfplan
+          fi
+
+      - name: Outputs
+        id: out
+        if: steps.guard.outputs.superseded != 'true' && steps.apply.outcome == 'success'
+        run: echo "web_url=$(terraform output -raw web_url)" >>"$GITHUB_OUTPUT"
+
+      # 8. Smoke test against the live environment: page, health, and the exact commit.
+      - name: Smoke test
+        id: smoke
+        if: steps.guard.outputs.superseded != 'true'
+        working-directory: frontend/e2e
+        env:
+          WEB_URL: ${{ steps.out.outputs.web_url }}
+        run: |
+          docker build -t misaapp-e2e .
+          docker run --rm -e BASE_URL="$WEB_URL" -e PW_SMOKE=1 \
+            -e EXPECTED_COMMIT="$IMAGE_TAG" -e EXPECTED_ENVIRONMENT="$ENVIRONMENT" \
+            -v "$PWD/playwright-report:/e2e/playwright-report" misaapp-e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && steps.smoke.outcome == 'failure'
+        with:
+          name: smoke-report-${{ needs.resolve.outputs.environment }}-${{ github.run_attempt }}
+          path: frontend/e2e/playwright-report
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # 9. Automatic rollback (push only). The job stays failed so GitHub notifies the team (FR-022).
+      - name: Roll back after failed smoke test
+        if: >-
+          failure() && steps.smoke.outcome == 'failure' && github.event_name == 'push'
+          && steps.capture.outputs.prev != '' && steps.capture.outputs.prev != env.IMAGE_TAG
+        env:
+          PREV: ${{ steps.capture.outputs.prev }}
+        run: |
+          terraform apply -auto-approve -input=false -var-file="$ENVIRONMENT.tfvars" -var "image_tag=$PREV"
+          echo "::error::Smoke failed: rolled back $ENVIRONMENT to $PREV"
+          echo "**Smoke failed: rolled back to \`$PREV\`.**" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Summary
+        if: always() && steps.guard.outputs.superseded != 'true'
+        env:
+          WEB_URL: ${{ steps.out.outputs.web_url }}
+          PREV: ${{ steps.capture.outputs.prev }}
+          EXECUTION: ${{ steps.migrate.outputs.execution }}
+          REASON: ${{ inputs.reason }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### $ENVIRONMENT: $OUTCOME"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Environment URL | ${WEB_URL:-n/a} |"
+            echo "| Deployed commit | \`$IMAGE_TAG\` |"
+            echo "| Previous commit | \`${PREV:-none}\` |"
+            echo "| Migration execution | ${EXECUTION:-skipped} |"
+            echo "| Trigger | $GITHUB_EVENT_NAME by @$GITHUB_ACTOR${REASON:+ ($REASON)} |"
+          } >>"$GITHUB_STEP_SUMMARY"

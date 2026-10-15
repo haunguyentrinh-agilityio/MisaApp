@@ -1,12 +1,13 @@
 # MisaApp
 
-React + ASP.NET Core web app with an AI chat box powered by Google Gemini (`Google.GenAI`), SQL Server, and a fully Dockerized dev/test setup.
+React + ASP.NET Core web app with an AI chat box powered by Google Gemini (`Google.GenAI`), Azure SQL Database, a Dockerized dev/test setup, and GitHub Actions deploys to Azure Container Apps.
 
 | Layer     | Tech                                                        |
 | --------- | ----------------------------------------------------------- |
 | Frontend  | React 19, TypeScript, Vite 8, pnpm, Vitest, React Testing Library |
 | Backend   | ASP.NET Core (.NET 10) minimal APIs, EF Core 10, xUnit v3    |
-| Database  | SQL Server 2025 (Developer, in Docker)                       |
+| Database  | Azure SQL Database (per-developer database on a shared nonprod server) |
+| Infra     | Terraform, GitHub Actions, Azure Container Apps              |
 | E2E       | Playwright (Chromium + Firefox, in Docker)                   |
 
 ```
@@ -15,25 +16,28 @@ specs/       Spec Kit feature specs: one folder per feature (spec, plan, tasks, 
 .specify/    Spec Kit constitution, templates, scripts
 frontend/    React app (+ e2e/ Playwright package)
 backend/     MisaApp.slnx: src/MisaApp.Api, tests/MisaApp.Api.Tests
-compose.yaml / compose.dev.yaml
+infra/       Terraform (shared/, environment/), bootstrap and helper scripts
+.github/     CI (ci.yml) and deploy (deploy.yml) workflows
+compose.yaml / compose.dev.yaml / compose.ci.yaml
 ```
 
 ## Prerequisites
 
 - Docker Desktop (WSL 2 backend)
 - For running tools outside Docker (optional): .NET SDK 10, Node 24 LTS, pnpm 10 (`corepack enable`)
+- Azure CLI (`az login`) and access to your developer database: see [Local development on Azure SQL](docs/deployment.md#local-development-on-azure-sql)
 - A Gemini API key from https://aistudio.google.com/apikey (optional; without one the chat echoes your message)
 
 ## Quick start
 
 ```powershell
-Copy-Item .env.example .env      # then set GEMINI_API_KEY (and change MSSQL_SA_PASSWORD if you like)
+Copy-Item .env.example .env      # then set SQL_CONNECTION_STRING (and optionally GEMINI_API_KEY)
 docker compose up -d --build
 ```
 
 - App: http://localhost:3000
-- API: http://localhost:8080/api/health · OpenAPI: http://localhost:8080/openapi/v1.json
-- SQL Server: `localhost,1433`, user `sa`, password from `.env`
+- API: http://localhost:8080/api/health · OpenAPI: http://localhost:8080/openapi/v1.json · version: http://localhost:8080/api/version
+- Database: your `sqldb-misaapp-dev-<alias>` on Azure SQL; the backend applies migrations on startup
 
 ### Hot-reload development
 
@@ -59,21 +63,24 @@ cd frontend; pnpm install; pnpm lint; pnpm typecheck; pnpm test
 ### Running outside Docker
 
 ```powershell
-docker compose up -d sqlserver
-cd backend; dotnet user-secrets set "Gemini:ApiKey" "<key>" --project src/MisaApp.Api; dotnet run --project src/MisaApp.Api
+cd backend; dotnet user-secrets set "ConnectionStrings:Default" "<SQL_CONNECTION_STRING value>" --project src/MisaApp.Api
+dotnet user-secrets set "Gemini:ApiKey" "<key>" --project src/MisaApp.Api; dotnet run --project src/MisaApp.Api
 cd frontend; pnpm dev            # http://localhost:5173, proxies /api to :5056
 ```
 
-`appsettings.Development.json` assumes the default password from `.env.example`. If you change it, override `ConnectionStrings:Default` with user-secrets.
+User secrets override `appsettings.Development.json`, so set `ConnectionStrings:Default` there to reach your Azure SQL database.
 
 ### Useful commands
 
 ```powershell
 docker compose logs -f backend
-docker compose down              # stop (keeps data)
-docker compose down -v           # stop and delete the database volume
+docker compose down              # stop
 cd backend; dotnet ef migrations add <Name> --project src/MisaApp.Api --output-dir Data/Migrations
 ```
+
+## CI/CD
+
+Pull requests to `develop`, `stag` and `main` must pass five checks (backend, frontend, infra, secrets, e2e). Merging deploys to Azure Container Apps: `develop` → develop automatically, `stag` → stage and `main` → production after approval. Images are built once per commit, and any environment can be rolled back to an earlier commit with `gh workflow run deploy.yml`. See [docs/deployment.md](docs/deployment.md).
 
 ## Working with Claude Code
 
@@ -101,6 +108,7 @@ specify version
 ## Docs
 
 - [Architecture](docs/architecture.md)
+- [Deployment](docs/deployment.md)
 - [Backlog](docs/backlog.md)
 - [Feature specs](specs/)
 - [Constitution](.specify/memory/constitution.md)

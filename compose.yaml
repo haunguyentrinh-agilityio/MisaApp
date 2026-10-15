@@ -1,46 +1,32 @@
 # Production-like stack: `docker compose up -d --build`
 # Hot-reload dev stack:  `docker compose -f compose.yaml -f compose.dev.yaml up -d --build`
 # E2E tests:             `docker compose --profile e2e run --rm playwright`
+# The database is Azure SQL (your sqldb-misaapp-dev-<alias> on the nonprod server); set
+# SQL_CONNECTION_STRING in .env as described in docs/deployment.md.
 name: misaapp
 
 services:
-  sqlserver:
-    image: mcr.microsoft.com/mssql/server:2025-latest
-    environment:
-      ACCEPT_EULA: "Y"
-      MSSQL_PID: Developer
-      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env (copy .env.example)}
-    ports:
-      - "${SQL_PORT:-1433}:1433"
-    volumes:
-      - sqlserver-data:/var/opt/mssql
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q 'SELECT 1' -o /dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-
   backend:
     build:
       context: ./backend
       target: runtime
+      args:
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-dev}
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
-      ConnectionStrings__Default: "Server=sqlserver,1433;Database=MisaApp;User Id=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      ConnectionStrings__Default: ${SQL_CONNECTION_STRING:?Set SQL_CONNECTION_STRING in .env (see docs/deployment.md)}
       Database__MigrateOnStartup: "true"
       Gemini__ApiKey: ${GEMINI_API_KEY:-}
       Gemini__Model: ${GEMINI_MODEL:-gemini-3.8-flash}
     ports:
       - "${API_PORT:-8080}:8080"
-    depends_on:
-      sqlserver:
-        condition: service_healthy
 
   frontend:
     build:
       context: ./frontend
       target: runtime
+      args:
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-dev}
     ports:
       - "${WEB_PORT:-3000}:80"
     depends_on:
@@ -57,6 +43,3 @@ services:
       - ./frontend/e2e/test-results:/e2e/test-results
     depends_on:
       - frontend
-
-volumes:
-  sqlserver-data:

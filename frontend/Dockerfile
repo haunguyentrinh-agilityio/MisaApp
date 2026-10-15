@@ -22,6 +22,11 @@ RUN pnpm build
 
 # ---- runtime: static files + reverse proxy to the API ----
 FROM nginx:1.29-alpine AS runtime
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ARG SOURCE_COMMIT=dev
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+# The image's entrypoint renders /etc/nginx/templates/*.template into conf.d with envsubst.
+ENV API_UPSTREAM=http://backend:8080 \
+    NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

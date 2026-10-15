@@ -1,6 +1,6 @@
 import type { FullConfig } from '@playwright/test'
 
-/** Waits for the whole stack (frontend → API → SQL Server) to report healthy before any test runs. */
+/** Waits for the whole stack (frontend → API → Azure SQL) to report healthy before any test runs. */
 export default async function globalSetup(config: FullConfig) {
   const baseURL = config.projects[0]?.use.baseURL
   if (!baseURL) throw new Error('baseURL is not configured')

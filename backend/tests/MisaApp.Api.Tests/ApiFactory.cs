@@ -13,7 +13,7 @@ namespace MisaApp.Api.Tests;
 
 /// <summary>
 /// Hosts the API in-memory against SQLite (no Docker needed) with a scriptable chat model.
-/// SQL Server-specific behaviour is covered by the Playwright suite against the real stack.
+/// Azure SQL-specific behaviour is covered by the Playwright suite against the real stack.
 /// </summary>
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {

@@ -3,14 +3,19 @@ server {
     server_name _;
     root /usr/share/nginx/html;
 
+    # Rendered by the nginx image's envsubst step at startup (/etc/nginx/templates).
     # Resolve the backend at request time so nginx starts even if the API container is restarting.
-    resolver 127.0.0.11 valid=10s ipv6=off;
-    set $api http://backend:8080;
+    # NGINX_LOCAL_RESOLVERS comes from /etc/resolv.conf (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1), so this
+    # works with Docker DNS locally and with Container Apps DNS in Azure.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+    set $api ${API_UPSTREAM};
 
     location /api/ {
         proxy_pass $api;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        # Container Apps ingress routes by Host, so send the upstream's host, not the public one.
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 120s;
