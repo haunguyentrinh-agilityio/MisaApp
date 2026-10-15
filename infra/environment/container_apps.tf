@@ -2,6 +2,7 @@ resource "azurerm_container_app_environment" "main" {
   name                       = "cae-misaapp-${var.environment}"
   resource_group_name        = data.azurerm_resource_group.env.name
   location                   = var.location
+  logs_destination           = "log-analytics"
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   tags                       = local.tags
 }

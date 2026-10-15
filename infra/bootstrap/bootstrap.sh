@@ -5,7 +5,8 @@
 #   infra/bootstrap/bootstrap.sh --subscription <id> --location southeastasia --suffix <abc123> \
 #     --repo <owner>/<repo> --approvers <github-user>[,<github-user>]
 #
-# Parts: 1 Azure foundation, 2 identities, 3 GitHub settings, 4 first apply of infra/shared.
+# Parts: 1 Azure foundation, 2 identities, 3 GitHub settings, 4 environment state and first apply
+# of infra/shared.
 # No secrets are created in GitHub; workflows authenticate with OIDC.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash: keep /subscriptions/... scopes intact
@@ -372,7 +373,7 @@ jq -n '{security_and_analysis: {
 record ensured "secret scanning + push protection"
 
 # ---------------------------------------------------------------------------------------------
-section "Part 4: first apply of infra/shared (admin credentials)"
+section "Part 4: environment state and first apply of infra/shared (admin credentials)"
 
 if [[ "$(az account show --query user.type -o tsv)" == "user" ]]; then
   ADMIN_ID=$(az ad signed-in-user show --query id -o tsv)
@@ -382,7 +383,9 @@ else
   ADMIN_TYPE=ServicePrincipal
 fi
 before=${#SUMMARY[@]}
-ensure_role "$ADMIN_ID" "$ADMIN_TYPE" "Storage Blob Data Contributor" "$(container_scope tfstate-shared)"
+for container in tfstate-shared tfstate-develop tfstate-stage tfstate-production; do
+  ensure_role "$ADMIN_ID" "$ADMIN_TYPE" "Storage Blob Data Contributor" "$(container_scope "$container")"
+done
 ensure_role "$ADMIN_ID" "$ADMIN_TYPE" "Key Vault Secrets Officer" "$SHARED_SCOPE"
 if printf '%s\n' "${SUMMARY[@]:before}" | grep -q '^created'; then
   echo "  waiting 90 s for the new data-plane roles to propagate..."
@@ -391,9 +394,30 @@ fi
 
 # Local run: the providers' use_oidc finds no GitHub token and falls back to the Azure CLI login.
 export ARM_SUBSCRIPTION_ID="$SUBSCRIPTION_ID" ARM_TENANT_ID="$TENANT_ID" ARM_USE_CLI=true
-SHARED_DIR="$REPO_ROOT/infra/shared"
 # Git Bash on Windows: terraform.exe can't resolve /d/... paths, so pass D:/... instead.
-if command -v cygpath >/dev/null; then SHARED_DIR=$(cygpath -m "$SHARED_DIR"); fi
+tf_path() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+
+# The azurerm backend creates a missing state blob under a lease, which needs write access, but the
+# plan identities only read state. Create each environment's empty state here so the first deploy's
+# plan job finds it. A throwaway data dir leaves the developer's infra/environment/.terraform alone.
+ENV_DIR=$(tf_path "$REPO_ROOT/infra/environment")
+SEED_DATA_DIR=$(mktemp -d)
+trap 'rm -rf "$SEED_DATA_DIR"' EXIT
+for env in "${ENVIRONMENTS[@]}"; do
+  exists=$(az storage blob exists --auth-mode login --account-name "$TFSTATE_ACCOUNT" \
+    -c "tfstate-$env" -n environment.tfstate --query exists -o tsv)
+  if [[ "${exists,,}" == "true" ]]; then
+    record exists "state tfstate-$env/environment.tfstate"
+    continue
+  fi
+  TF_DATA_DIR=$(tf_path "$SEED_DATA_DIR") terraform -chdir="$ENV_DIR" init -input=false -reconfigure \
+    -backend-config="storage_account_name=$TFSTATE_ACCOUNT" \
+    -backend-config="container_name=tfstate-$env" \
+    -backend-config="key=environment.tfstate" >/dev/null
+  record created "state tfstate-$env/environment.tfstate"
+done
+
+SHARED_DIR=$(tf_path "$REPO_ROOT/infra/shared")
 terraform -chdir="$SHARED_DIR" init -input=false -reconfigure \
   -backend-config="storage_account_name=$TFSTATE_ACCOUNT" \
   -backend-config="container_name=tfstate-shared" \

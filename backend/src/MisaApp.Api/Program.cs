@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using MisaApp.Api.Data;
 using MisaApp.Api.Features.Chat;
 using MisaApp.Api.Features.Version;
@@ -28,7 +30,17 @@ var app = builder.Build();
 if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
 {
     await using var scope = app.Services.CreateAsyncScope();
-    await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.MigrateAsync();
+    var database = scope.ServiceProvider.GetRequiredService<AppDbContext>().Database;
+    // Migrate would create a missing database with the server's default, billed SKU. Terraform creates
+    // developer databases and ci-database.sh creates CI ones, so a missing one is a setup mistake.
+    if (!await database.GetService<IRelationalDatabaseCreator>().ExistsAsync())
+    {
+        throw new InvalidOperationException(
+            $"Database '{database.GetDbConnection().Database}' does not exist. Developer databases are " +
+            "created by the develop deploy (infra/shared); see docs/deployment.md.");
+    }
+
+    await database.MigrateAsync();
 }
 
 if (app.Services.GetRequiredService<IChatModel>() is EchoChatModel)
