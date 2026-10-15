@@ -156,9 +156,10 @@ resource "azurerm_container_app" "web" {
       cpu    = 0.25
       memory = "0.5Gi"
 
+      # The internal FQDN, not the bare app name: nginx's resolver ignores resolv.conf search domains.
       env {
         name  = "API_UPSTREAM"
-        value = "http://${local.api_app_name}"
+        value = "http://${azurerm_container_app.api.ingress[0].fqdn}"
       }
       env {
         name  = "NGINX_ENTRYPOINT_LOCAL_RESOLVERS"

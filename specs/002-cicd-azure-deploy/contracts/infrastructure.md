@@ -79,7 +79,7 @@ threshold 5). Ingress: internal, target port 8080, `allow_insecure_connections =
 
 | Env var | Azure value | Compose value |
 | --- | --- | --- |
-| `API_UPSTREAM` | `http://ca-misaapp-<env>-api` | `http://backend:8080` |
+| `API_UPSTREAM` | `http://ca-misaapp-<env>-api.internal.<environment domain>` (the API's ingress FQDN; nginx doesn't apply resolv.conf search domains) | `http://backend:8080` |
 | `NGINX_ENTRYPOINT_LOCAL_RESOLVERS` | `1` | `1` |
 
 Ingress: external, target port 80, HTTPS only. Readiness `GET /`.
