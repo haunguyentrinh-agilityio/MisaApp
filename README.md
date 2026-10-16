@@ -1,12 +1,13 @@
 # MisaApp
 
-React + ASP.NET Core web app with an AI chat box powered by Google Gemini (`Google.GenAI`), Azure SQL Database, a Dockerized dev/test setup, and GitHub Actions deploys to Azure Container Apps.
+React + ASP.NET Core web app with an AI chat box powered by Google Gemini (`Google.GenAI`), a Dockerized dev/test setup, and GitHub Actions deploys to Azure Container Apps.
+
+The chat is stateless on the server: there is no database. The browser keeps the current chat in `localStorage` until **New chat** and sends the recent turns with each message.
 
 | Layer     | Tech                                                        |
 | --------- | ----------------------------------------------------------- |
 | Frontend  | React 19, TypeScript, Vite 8, pnpm, Vitest, React Testing Library |
-| Backend   | ASP.NET Core (.NET 10) minimal APIs, EF Core 10, xUnit v3    |
-| Database  | Azure SQL Database (per-developer database on a shared nonprod server) |
+| Backend   | ASP.NET Core (.NET 10) minimal APIs, xUnit v3                |
 | Infra     | Terraform, GitHub Actions, Azure Container Apps              |
 | E2E       | Playwright (Chromium + Firefox, in Docker)                   |
 
@@ -25,19 +26,17 @@ compose.yaml / compose.dev.yaml / compose.ci.yaml
 
 - Docker Desktop (WSL 2 backend)
 - For running tools outside Docker (optional): .NET SDK 10, Node 24 LTS, pnpm 10 (`corepack enable`)
-- Azure CLI (`az login`) and access to your developer database: see [Local development on Azure SQL](docs/deployment.md#local-development-on-azure-sql)
 - A Gemini API key from https://aistudio.google.com/apikey (optional; without one the chat echoes your message)
 
 ## Quick start
 
 ```powershell
-Copy-Item .env.example .env      # then set SQL_CONNECTION_STRING (and optionally GEMINI_API_KEY)
+Copy-Item .env.example .env      # optionally set GEMINI_API_KEY
 docker compose up -d --build
 ```
 
 - App: http://localhost:3000
 - API: http://localhost:8080/api/health · OpenAPI: http://localhost:8080/openapi/v1.json · version: http://localhost:8080/api/version
-- Database: your `sqldb-misaapp-dev-<alias>` on Azure SQL; the backend applies migrations on startup
 
 ### Hot-reload development
 
@@ -63,19 +62,16 @@ cd frontend; pnpm install; pnpm lint; pnpm typecheck; pnpm test
 ### Running outside Docker
 
 ```powershell
-cd backend; dotnet user-secrets set "ConnectionStrings:Default" "<SQL_CONNECTION_STRING value>" --project src/MisaApp.Api
-dotnet user-secrets set "Gemini:ApiKey" "<key>" --project src/MisaApp.Api; dotnet run --project src/MisaApp.Api
+cd backend; dotnet user-secrets set "Gemini:ApiKey" "<key>" --project src/MisaApp.Api   # optional
+dotnet run --project src/MisaApp.Api
 cd frontend; pnpm dev            # http://localhost:5173, proxies /api to :5056
 ```
-
-User secrets override `appsettings.Development.json`, so set `ConnectionStrings:Default` there to reach your Azure SQL database.
 
 ### Useful commands
 
 ```powershell
 docker compose logs -f backend
 docker compose down              # stop
-cd backend; dotnet ef migrations add <Name> --project src/MisaApp.Api --output-dir Data/Migrations
 ```
 
 ## CI/CD
@@ -85,7 +81,7 @@ Pull requests to `develop`, `stag` and `main` must pass five checks (backend, fr
 ## Working with Claude Code
 
 Project instructions are in `CLAUDE.md`, and the daily workflows are skills in `.claude/skills/`:
-`/daily-start`, `/feature <idea>`, `/bugfix <issue>`, `/db-migration <Name>`, `/verify`, `/daily-wrap-up`, `/improve-workflow`.
+`/daily-start`, `/feature <idea>`, `/bugfix <issue>`, `/verify`, `/daily-wrap-up`, `/improve-workflow`.
 See [docs/claude-workflows.md](docs/claude-workflows.md).
 
 ### Spec-driven development (GitHub Spec Kit)

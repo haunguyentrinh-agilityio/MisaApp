@@ -11,9 +11,6 @@
       "Bash(dotnet test:*)",
       "Bash(dotnet restore:*)",
       "Bash(dotnet list package:*)",
-      "Bash(dotnet ef migrations add:*)",
-      "Bash(dotnet ef migrations list:*)",
-      "Bash(dotnet ef migrations script:*)",
       "Bash(pnpm lint:*)",
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm test:*)",
@@ -44,9 +41,7 @@
       "Bash(git commit:*)",
       "Bash(.specify/extensions/git/scripts/bash/auto-commit.sh:*)",
       "Bash(bash .specify/extensions/git/scripts/bash/auto-commit.sh:*)",
-      "Bash(docker compose down:*)",
-      "Bash(dotnet ef database:*)",
-      "Bash(dotnet ef migrations remove:*)"
+      "Bash(docker compose down:*)"
     ],
     "deny": [
       "Read(./.env)",

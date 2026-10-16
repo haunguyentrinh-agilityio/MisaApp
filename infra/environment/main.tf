@@ -5,7 +5,6 @@ locals {
   resource_group_name    = "rg-misaapp-${var.environment}"
   web_app_name           = "ca-misaapp-${var.environment}-web"
   api_app_name           = "ca-misaapp-${var.environment}-api"
-  migrate_job_name       = "caj-misaapp-${var.environment}-migrate"
   sql_server_name        = "sql-misaapp-${var.environment}-${var.suffix}"
   sql_database_name      = "sqldb-misaapp"
   key_vault_name         = "kv-misaapp-${local.env_code}-${var.suffix}" # Key Vault names are limited to 24 characters

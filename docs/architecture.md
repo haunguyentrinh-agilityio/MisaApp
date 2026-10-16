@@ -6,8 +6,8 @@
 
 ```
                  ┌──────────────── docker compose (project: misaapp) ─────────────────┐
- Browser ──:3000─┤► frontend (nginx)  ── /api/* ──► backend (ASP.NET Core :8080) ─────┼──► Azure SQL Database
-                 │    static React build                │                             │    sqldb-misaapp-dev-<alias>
+ Browser ──:3000─┤► frontend (nginx)  ── /api/* ──► backend (ASP.NET Core :8080)      │
+                 │    static React build                │                             │
                  │                                      └──► Google Gemini API ───────┼──► (Google.GenAI SDK, HTTPS)
                  │  playwright (profile: e2e) ──► http://frontend                     │
                  └────────────────────────────────────────────────────────────────────┘
@@ -15,15 +15,13 @@
 
 | Service      | Image / build                             | Host port         | Notes                                                    |
 | ------------ | ----------------------------------------- | ----------------- | -------------------------------------------------------- |
-| `backend`    | `backend/Dockerfile` (`runtime` / `dev`)  | `API_PORT` (8080) | Applies EF migrations on startup; database from `SQL_CONNECTION_STRING` |
+| `backend`    | `backend/Dockerfile` (`runtime` / `dev`)  | `API_PORT` (8080) | Stateless; Gemini key from `GEMINI_API_KEY` (echo model without one) |
 | `frontend`   | `frontend/Dockerfile` (`runtime` / `dev`) | `WEB_PORT` (3000) | nginx serves `dist/`, proxies `/api/` to `API_UPSTREAM` (`http://backend:8080`) |
-| `playwright` | `frontend/e2e/Dockerfile`                 | –                 | Only with `--profile e2e`; waits up to 180 s for `/api/health` first |
+| `playwright` | `frontend/e2e/Dockerfile`                 | –                 | Only with `--profile e2e`; waits up to 60 s for `/api/health` first |
 
-There is no local database container. Each developer has a database on the shared nonprod server
-`sql-misaapp-nonprod-<suffix>`; see [deployment.md](deployment.md#local-development-on-azure-sql).
-`compose.dev.yaml` switches backend/frontend to their `dev` stages: `dotnet watch` and the Vite dev
-server with bind mounts and polling file watchers (needed for Windows bind mounts). `compose.ci.yaml`
-swaps the builds for registry images in deploy-run E2E.
+There is no database. `compose.dev.yaml` switches backend/frontend to their `dev` stages: `dotnet watch`
+and the Vite dev server with bind mounts and polling file watchers (needed for Windows bind mounts).
+`compose.ci.yaml` swaps the builds for registry images in deploy-run E2E.
 
 ### Azure (per environment: develop, stage, production)
 
@@ -32,44 +30,44 @@ swaps the builds for registry images in deploy-run E2E.
                        ┌────────────────── Container Apps environment cae-misaapp-<env> ──────────────────┐
  Browser ──HTTPS──────►│ ca-misaapp-<env>-web (nginx, external) ──/api/*──► ca-misaapp-<env>-api (internal) │
                        │                                                       │  managed identity        │
-                       │ caj-misaapp-<env>-migrate (job: EF migration bundle) ─┼──────────────┐           │
-                       └───────────────────────────────────────────────────────┼──────────────┼───────────┘
-                         Key Vault kv-misaapp-<code>-<suffix> ◄─ gemini-api-key┘              ▼
-                         Log Analytics log-misaapp-<env>          Azure SQL sql-misaapp-<env>-<suffix> / sqldb-misaapp
-                                                                  (Entra-only auth)
- rg-misaapp-shared: registry crmisaapp<suffix> (images misaapp-api, misaapp-web, misaapp-migrator; daily purge),
-                    nonprod SQL server (developer and CI databases), kv-misaapp-np-<suffix>, Terraform state storage
+                       └───────────────────────────────────────────────────────┼──────────────────────────┘
+                         Key Vault kv-misaapp-<code>-<suffix> ◄─ gemini-api-key┘
+                         Log Analytics log-misaapp-<env>
+ rg-misaapp-shared: registry crmisaapp<suffix> (images misaapp-api, misaapp-web; daily purge), Terraform state storage
 ```
 
 - The web app is the only public endpoint. The API has internal ingress; nginx reaches it by name.
-- Each app and the migrate job has its own user-assigned identity (AcrPull only for web). The API
-  identity has Key Vault Secrets User and a contained database user created by the migrator.
-- The migrate job runs before every deploy applies the new revision. Apps run in single-revision mode;
-  traffic moves once the new revision is ready.
-- Everything is Terraform: `infra/shared` (registry, nonprod SQL and vault) and `infra/environment`
-  (one state per environment, `<env>.tfvars`). Pipeline and operations: [deployment.md](deployment.md).
+- Each app has its own user-assigned identity (AcrPull; the API also has Key Vault Secrets User).
+  Apps run in single-revision mode; traffic moves once the new revision is ready.
+- Everything is Terraform: `infra/shared` (registry) and `infra/environment` (one state per
+  environment, `<env>.tfvars`). Pipeline and operations: [deployment.md](deployment.md).
+- **Until Release B** of [specs/003-remove-chat-database](../specs/003-remove-chat-database/tasks.md)
+  reaches every environment, the former database infrastructure is still provisioned but unused by
+  the code: the Azure SQL server and database per environment (with the migrator identity as its
+  Entra admin), the API's `ConnectionStrings__Default`/`Database__MigrateOnStartup` env vars, the
+  shared nonprod SQL server and `kv-misaapp-np-<suffix>`, and old `misaapp-migrator` images. They stay
+  so a rollback to a commit from before the database removal still runs; see
+  [deployment.md](deployment.md#rollback-limits-after-the-database-removal).
 
 ## Backend
 
-- Minimal APIs, organized by **feature folder** (`Features/Chat/...`): entities + EF configuration, contracts, service, endpoints, DI extension.
-- `AppDbContext` (EF Core 10, SQL Server provider with retry-on-failure). Migrations in `Data/Migrations`; in Azure they ship as the `migrator` image (an EF migration bundle).
-- Cross-cutting: ProblemDetails for all errors, built-in .NET 10 validation (`AddValidation`), health checks at `/api/health` (includes a DB check), OpenAPI at `/openapi/v1.json` in Development.
+- Minimal APIs, organized by **feature folder** (`Features/Chat/...`): contracts, service, endpoints, DI extension.
+- Stateless: no database, no server-side session. Nothing a user types is stored by the API.
+- Cross-cutting: ProblemDetails for all errors, built-in .NET 10 validation (`AddValidation`), health checks at `/api/health` (process liveness only), OpenAPI at `/openapi/v1.json` in Development.
 
 ### Chat feature
 
-| Method | Route                                   | Purpose                                   |
-| ------ | --------------------------------------- | ----------------------------------------- |
-| POST   | `/api/chat/messages`                    | Send a message; creates a conversation if `conversationId` is null. Returns the stored user message and the reply. 404 unknown conversation, 400 invalid, 502 model failure. |
-| GET    | `/api/chat/conversations`               | Recent conversations (`?take=`, max 200)  |
-| GET    | `/api/chat/conversations/{id}`          | One conversation with its messages        |
+| Method | Route                | Purpose                                                                 |
+| ------ | -------------------- | ----------------------------------------------------------------------- |
+| POST   | `/api/chat/messages` | `{ message, history? }` → `{ reply }`. 400 invalid (empty or > 4000-char message, > 20 history turns, a turn > 8000 chars, unknown or missing role), 502 model failure. |
 
-Flow: `ChatService` loads the last `Gemini:MaxHistoryMessages` turns, calls `IChatModel`, and **only then** persists the user message + reply (a failed model call stores nothing).
+Flow: the browser sends the new message and up to 20 earlier turns (`history`, each `{ role: "user" | "assistant", content }`).
+`ChatService` keeps the last `Gemini:MaxHistoryMessages - 1` turns of the history, appends the new user turn, calls
+`IChatModel`, and returns the reply. Nothing is persisted.
 
 `IChatModel` implementations:
 - `GeminiChatModel`: `Google.GenAI` `Client.Models.GenerateContentAsync` with roles `user`/`model` and an optional system instruction.
-- `EchoChatModel`: used automatically when `Gemini:ApiKey` is empty (local dev without a key, E2E, develop and stage).
-
-Data model: `Conversation (Guid v7 PK, Title, CreatedAtUtc, UpdatedAtUtc)` 1─* `ChatMessage (bigint identity PK, ConversationId, Role as string, Content, CreatedAtUtc)`.
+- `EchoChatModel`: used automatically when `Gemini:ApiKey` is empty (local dev without a key, E2E, and any environment with `gemini_enabled = false`).
 
 ### Version feature
 
@@ -80,15 +78,15 @@ Data model: `Conversation (Guid v7 PK, Title, CreatedAtUtc, UpdatedAtUtc)` 1─*
 ## Frontend
 
 - React 19 + Vite. Feature folders under `src/features/`; shared fetch wrapper in `src/lib/api.ts` (throws `ApiError` with ProblemDetails text).
-- `ChatBox`: optimistic user message, "Thinking…" indicator, rollback and restore the draft on error, Enter to send / Shift+Enter for a newline, conversation id kept in `localStorage` and history restored on reload.
+- `ChatBox`: optimistic user message, "Thinking…" indicator, rollback and restore the draft on error, Enter to send / Shift+Enter for a newline.
+- `chatStorage.ts`: the current chat lives in `localStorage` under `chat.messages` (last 100 messages), written after each successful reply, restored on reload, and removed by **New chat**. Invalid stored data and the legacy `chat.conversationId` key are discarded on load; storage errors (private mode, quota) are ignored, so the chat still works for the open tab.
+- `chatApi.buildHistory` sends the last 20 messages as `history`, each trimmed to 8000 characters.
 - Dev: Vite proxies `/api` to `API_PROXY_TARGET` (default `http://localhost:5056`). Docker and Azure: nginx proxies to `API_UPSTREAM` (an nginx template variable).
 
 ## Configuration
 
 | Setting                        | Local (Docker)                       | Azure                                    | Default                 |
 | ------------------------------ | ------------------------------------ | ---------------------------------------- | ----------------------- |
-| `ConnectionStrings:Default`    | `SQL_CONNECTION_STRING` in `.env`    | managed identity (`Authentication=Active Directory Managed Identity`) | – |
-| `Database:MigrateOnStartup`    | `true` (compose)                     | `false`; the migrate job runs migrations | `false`                 |
 | `Gemini:ApiKey`                | `GEMINI_API_KEY` in `.env`           | Key Vault `gemini-api-key` when `gemini_enabled` | empty → echo model |
 | `Gemini:Model`                 | `GEMINI_MODEL` in `.env`             | `gemini_model` in tfvars                 | `gemini-3.8-flash`      |
 | `Gemini:SystemInstruction`     | `appsettings.json`                   | `appsettings.json`                       | short assistant prompt  |
@@ -96,15 +94,15 @@ Data model: `Conversation (Guid v7 PK, Title, CreatedAtUtc, UpdatedAtUtc)` 1─*
 | `App:Commit`                   | `SOURCE_COMMIT` build arg            | image built with the commit SHA          | `dev`                   |
 | `App:Environment`              | –                                    | `develop` / `stage` / `production`       | `local`                 |
 
-Local (non-Docker) secrets: `dotnet user-secrets set "ConnectionStrings:Default" "<connection string>" --project backend/src/MisaApp.Api` (and `Gemini:ApiKey` the same way).
+Local (non-Docker) secrets: `dotnet user-secrets set "Gemini:ApiKey" "<key>" --project backend/src/MisaApp.Api` (optional).
 
 ## Testing strategy
 
 | Layer        | Tool                         | Scope                                                         |
 | ------------ | ---------------------------- | ------------------------------------------------------------- |
-| Backend      | xUnit v3 + `WebApplicationFactory` + SQLite in-memory | Endpoints end to end inside the process, LLM faked |
-| Frontend     | Vitest + RTL + user-event    | Components with `fetch` stubbed                               |
-| E2E          | Playwright (Chromium, Firefox) in Docker | Real stack on Azure SQL (your dev database locally, a throwaway `sqldb-misaapp-ci-*` database in CI); LLM-agnostic assertions |
+| Backend      | xUnit v3 + `WebApplicationFactory` | Endpoints end to end inside the process, LLM faked (`FakeChatModel`) |
+| Frontend     | Vitest + RTL + user-event    | Components and `localStorage` handling with `fetch` stubbed   |
+| E2E          | Playwright (Chromium, Firefox) in Docker | The real stack with the echo model; LLM-agnostic assertions |
 | Smoke        | Playwright `@smoke` tests (`PW_SMOKE=1`, Chromium) | Live environment after each deploy: page, health, deployed commit |
 | Infra        | `terraform validate`, tflint, trivy, actionlint, gitleaks | Every pull request (`ci.yml`, job `infra` and `secrets`) |
 
@@ -112,8 +110,6 @@ Local (non-Docker) secrets: `dotnet user-secrets set "ConnectionStrings:Default"
 
 - **Minimal APIs + feature folders** rather than controllers + layers: less ceremony, everything for a feature in one place.
 - **`IChatModel` seam**: keeps Google.GenAI out of business logic and tests; the echo fallback lets the app run with no key.
-- **SQLite for integration tests**: fast and Docker-free. SQL Server-specific behavior is covered by E2E against Azure SQL.
+- **Stateless chat, history in the browser** ([specs/003-remove-chat-database](../specs/003-remove-chat-database/spec.md)): chats are not kept, so there is no database to run, secure, migrate or pay for. The client sends the context the model needs; the server enforces the limits.
 - **Same-origin `/api` proxy** (Vite/nginx): no CORS configuration needed, and the API stays internal in Azure.
-- **Migrations as a deployment step** in Azure (migrate job before the new revision); on startup only locally. Migrations must stay backward compatible with the previous release ([rule](deployment.md#database-migrations-backward-compatibility-rule)).
 - **Build once, deploy the tested images**: images are tagged with the commit SHA; E2E, deploy and rollback all use the same tag.
-- **Azure SQL everywhere**: local development uses the same engine as production, so there is no local SQL container.

@@ -21,8 +21,8 @@ Goal: in a few minutes, get the user oriented and agree on today's focus. Do not
    - Active Spec Kit feature: read `.specify/feature.json` (if present). In that feature's `tasks.md`, count `- [x]` against `- [ ]` and name the next open task.
 
 3. **Stack health** (skip quietly if Docker isn't running, just say so)
-   - `docker compose ps` — are `backend` and `frontend` up and healthy? (The database is Azure SQL; there is no local `sqlserver`.)
-   - If the stack is up: `curl -fsS http://localhost:${WEB_PORT:-3000}/api/health` (also proves the Azure SQL dev database is reachable; if it fails with a firewall error, re-run `infra/scripts/allow-my-ip.sh`).
+   - `docker compose ps` — are `backend` and `frontend` up and healthy? (There is no database service.)
+   - If the stack is up: `curl -fsS http://localhost:${WEB_PORT:-3000}/api/health` (proves nginx reaches the API).
    - Scan `docker compose logs --since 12h backend | grep -iE "fail|error|exception"` for new problems.
 
 4. **Fast checks** (run in parallel when possible)

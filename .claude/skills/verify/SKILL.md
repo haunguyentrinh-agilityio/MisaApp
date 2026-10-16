@@ -21,7 +21,7 @@ Run the gates below. Run independent gates in parallel. Don't stop at the first 
 
 Notes:
 - If local Node is < 24, run gates 2–5 in a `node:24-alpine` container (see `CLAUDE.md`).
-- Gates 6–7 need `SQL_CONNECTION_STRING` in `.env` (your Azure SQL dev database; see `docs/deployment.md`). If it's missing, compose stops with an error: mark 6–7 ❌ with that reason.
+- Gates 6–7 need no secrets: without `GEMINI_API_KEY` the backend uses its echo model, which is what E2E expects.
 - If Docker isn't running, mark 6–7 as ⏭ skipped and say so; don't claim they passed.
 - Gate 8 can run in containers: `hashicorp/terraform` (version from `infra/*/versions.tf`, with `TF_DATA_DIR=/tmp/tfdata`) and `rhysd/actionlint`.
 - If the dev overlay (`compose.dev.yaml`) is what's running, pass both `-f` files to gate 7.

@@ -1,44 +1,21 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ApiError } from '../../lib/api'
-import { chatApi, MAX_MESSAGE_LENGTH, type ChatMessage } from './chatApi'
+import { buildHistory, chatApi, MAX_MESSAGE_LENGTH, type ChatMessage } from './chatApi'
+import { clearChat, loadChat, saveChat } from './chatStorage'
 import './ChatBox.css'
 
-export const CONVERSATION_STORAGE_KEY = 'chat.conversationId'
+// Not crypto.randomUUID: it is missing outside secure contexts (e.g. http://frontend in E2E).
+let messageCounter = 0
+function createMessageId() {
+  messageCounter += 1
+  return `${Date.now()}-${messageCounter}`
+}
 
 export function ChatBox() {
-  const [conversationId, setConversationId] = useState<string | null>(() =>
-    localStorage.getItem(CONVERSATION_STORAGE_KEY),
-  )
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>(loadChat)
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const logRef = useRef<HTMLOListElement>(null)
-
-  // Restore the previous conversation after a reload.
-  useEffect(() => {
-    const storedId = localStorage.getItem(CONVERSATION_STORAGE_KEY)
-    if (!storedId) return
-
-    let cancelled = false
-    chatApi
-      .getConversation(storedId)
-      .then((conversation) => {
-        if (!cancelled) setMessages(conversation.messages)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        if (err instanceof ApiError && err.status === 404) {
-          localStorage.removeItem(CONVERSATION_STORAGE_KEY)
-          setConversationId(null)
-        } else {
-          setError('Could not load the previous conversation.')
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     logRef.current?.lastElementChild?.scrollIntoView?.({ block: 'end' })
@@ -48,29 +25,23 @@ export function ChatBox() {
     const text = draft.trim()
     if (!text || pending) return
 
-    const optimistic: ChatMessage = {
-      id: -Date.now(),
-      role: 'user',
-      content: text,
-      createdAtUtc: new Date().toISOString(),
-    }
-    setMessages((current) => [...current, optimistic])
+    // The server keeps nothing, so every request carries the earlier turns.
+    const history = buildHistory(messages)
+    // Nothing else changes the chat while a send is pending (Send and New chat are disabled).
+    const withQuestion: ChatMessage[] = [...messages, { id: createMessageId(), role: 'user', content: text }]
+    setMessages(withQuestion)
     setDraft('')
     setError(null)
     setPending(true)
 
     try {
-      const response = await chatApi.sendMessage(text, conversationId)
-      setMessages((current) => [
-        ...current.filter((m) => m.id !== optimistic.id),
-        response.userMessage,
-        response.reply,
-      ])
-      setConversationId(response.conversationId)
-      localStorage.setItem(CONVERSATION_STORAGE_KEY, response.conversationId)
+      const reply = await chatApi.sendMessage(text, history)
+      const withReply: ChatMessage[] = [...withQuestion, { id: createMessageId(), role: 'assistant', content: reply }]
+      setMessages(withReply)
+      saveChat(withReply)
     } catch (err) {
-      // Roll back so the user can edit and retry.
-      setMessages((current) => current.filter((m) => m.id !== optimistic.id))
+      // Roll back so the user can edit and retry; the stored chat is untouched.
+      setMessages(messages)
       setDraft(text)
       setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
@@ -91,8 +62,7 @@ export function ChatBox() {
   }
 
   function startNewChat() {
-    localStorage.removeItem(CONVERSATION_STORAGE_KEY)
-    setConversationId(null)
+    clearChat()
     setMessages([])
     setError(null)
   }

@@ -1,12 +1,12 @@
 import type { FullConfig } from '@playwright/test'
 
-/** Waits for the whole stack (frontend → API → Azure SQL) to report healthy before any test runs. */
+/** Waits for the whole stack (frontend → API) to report healthy before any test runs. */
 export default async function globalSetup(config: FullConfig) {
   const baseURL = config.projects[0]?.use.baseURL
   if (!baseURL) throw new Error('baseURL is not configured')
 
   const healthUrl = new URL('/api/health', baseURL).toString()
-  const deadline = Date.now() + 180_000
+  const deadline = Date.now() + 60_000
   let lastError = ''
 
   while (Date.now() < deadline) {
@@ -20,5 +20,5 @@ export default async function globalSetup(config: FullConfig) {
     await new Promise((resolve) => setTimeout(resolve, 2_000))
   }
 
-  throw new Error(`Stack not healthy at ${healthUrl} after 180s: ${lastError}`)
+  throw new Error(`Stack not healthy at ${healthUrl} after 60s: ${lastError}`)
 }

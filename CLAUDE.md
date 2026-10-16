@@ -10,14 +10,14 @@ MisaApp: a web app with an AI chat box backed by Google Gemini (`Google.GenAI` .
 | ---------- | --------------------------------------------------------------------- | ------------------- |
 | Frontend   | React 19, TypeScript, Vite, pnpm, Vitest + React Testing Library       | `frontend/`         |
 | E2E        | Playwright (separate pnpm package, runs in its own container)        | `frontend/e2e/`     |
-| Backend    | ASP.NET Core (.NET 10) minimal APIs, EF Core 10, xUnit v3             | `backend/`          |
-| Database   | Azure SQL Database (per-developer DB on `sql-misaapp-nonprod-<suffix>`) | `infra/shared/`   |
+| Backend    | ASP.NET Core (.NET 10) minimal APIs, xUnit v3                         | `backend/`          |
 | Infra      | Terraform, GitHub Actions (Azure Container Apps)                      | `infra/`, `.github/workflows/` |
 | Specs      | Spec Kit feature specs, plans, tasks (one folder per feature)         | `specs/`            |
 | Docs       | Architecture, backlog, dev log, workflow guide                        | `docs/`             |
 
-Everything runs in Docker: `backend`, `frontend`, `playwright` (profile `e2e`); the database is Azure SQL
-(`SQL_CONNECTION_STRING` in `.env`). Merges to `develop`/`stag`/`main` deploy to Azure: see `docs/deployment.md`.
+Everything runs in Docker: `backend`, `frontend`, `playwright` (profile `e2e`). There is no database: the chat is
+stateless on the server and kept in the browser's `localStorage`. Merges to `develop`/`stag`/`main` deploy to Azure:
+see `docs/deployment.md`.
 
 ## Commands
 
@@ -32,9 +32,8 @@ docker compose logs -f backend
 docker compose down
 
 # Backend (from backend/)
-dotnet test                    # xUnit v3 on Microsoft.Testing.Platform, SQLite in-memory
-dotnet ef migrations add <Name> --project src/MisaApp.Api --output-dir Data/Migrations
-dotnet run --project src/MisaApp.Api   # http://localhost:5056, needs ConnectionStrings:Default via dotnet user-secrets
+dotnet test                    # xUnit v3 on Microsoft.Testing.Platform
+dotnet run --project src/MisaApp.Api   # http://localhost:5056; optional Gemini:ApiKey via dotnet user-secrets
 
 # Frontend (from frontend/, Node >= 24)
 pnpm test        # Vitest
@@ -57,7 +56,7 @@ If local Node is older than 24, run frontend checks in a container:
 - **API contract.** Routes under `/api/<feature>`. JSON is camelCase, enums are camelCase strings. Errors are RFC 7807 ProblemDetails; the frontend reads `detail ?? title`. When a DTO changes, update the TypeScript types in the matching `*Api.ts` in the same change.
 - **Tests are part of the change.** Every endpoint gets an integration test (`ApiFactory`); every component gets an RTL test; every user-visible flow gets a Playwright test. E2E assertions must not depend on real Gemini output (the echo model is used when no key is set).
 - **Secrets.** Never read, print, or commit `.env`. Configuration goes through `.env` → compose env vars → `Section__Key`.
-- **Database changes** always go through an EF migration; never edit an applied migration. Migrations must stay backward compatible with the previous release (expand/contract), because the old revision keeps serving while they run and rollback doesn't revert them.
+- **No server-side storage.** Chat content stays in the visitor's browser; the API only forwards it to the model. Adding a database or other persistent storage needs a constitution amendment first.
 - **Deployments** happen only through `.github/workflows/deploy.yml`; infrastructure changes only through Terraform in `infra/`.
 - **Docs.** A new feature gets a spec through Spec Kit (see below); update `docs/backlog.md` when work starts or finishes.
 
@@ -74,7 +73,7 @@ Non-negotiable project rules live in `.specify/memory/constitution.md`; plans ar
 
 1. `dotnet test` passes in `backend/`
 2. `pnpm lint && pnpm typecheck && pnpm test && pnpm build` pass in `frontend/`
-3. The Playwright suite passes against the Docker stack (on your Azure SQL dev database); for `infra/` or workflow changes, `terraform validate` and `actionlint` pass
+3. The Playwright suite passes against the Docker stack; for `infra/` or workflow changes, `terraform validate` and `actionlint` pass
 4. Docs/backlog updated; no secrets or stray debug code in the diff
 
 ## Daily workflows (skills)
@@ -86,7 +85,6 @@ Invoke with `/<name>`. Details and how to evolve them: `docs/claude-workflows.md
 | `/daily-start`     | Morning check-in: state of repo + stack, pick today's work      |
 | `/feature <idea>`  | Spec Kit flow (specify → plan → tasks → implement → converge) with checkpoints, then verify |
 | `/bugfix <issue>`  | Reproduce with a failing test, fix, verify                      |
-| `/db-migration`    | Add and review an EF Core migration                             |
 | `/verify`          | Run every check and report a pass/fail table                    |
 | `/daily-wrap-up`   | Dev log, backlog update, commit message suggestions             |
 | `/improve-workflow`| Refine these skills / CLAUDE.md based on what went wrong        |

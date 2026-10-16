@@ -28,9 +28,7 @@ This project ships its own Claude Code setup so daily work follows the same step
 /daily-wrap-up                       → dev log, backlog, commit messages
 ```
 
-`/db-migration <Name>` is used by `/feature` whenever the schema changes, and can be run on its own.
-
-`daily-start`, `daily-wrap-up` and `improve-workflow` are user-invoked only (`disable-model-invocation: true`). Claude can pick `feature`, `bugfix`, `db-migration` and `verify` on its own when the request matches.
+`daily-start`, `daily-wrap-up` and `improve-workflow` are user-invoked only (`disable-model-invocation: true`). Claude can pick `feature`, `bugfix` and `verify` on its own when the request matches.
 
 ## Spec-driven development with Spec Kit
 
@@ -73,3 +71,4 @@ This project ships its own Claude Code setup so daily work follows the same step
 - 2026-10-14: Initial workflows: daily-start, feature, bugfix, db-migration, verify, daily-wrap-up, improve-workflow.
 - 2026-10-14: Adopted GitHub Spec Kit v1.2.0 (Claude skills, sh scripts, git extension). Added the constitution v1.0.0. `/feature` now drives the `/speckit-*` flow. Specs moved from `docs/features/` to `specs/`.
 - 2026-10-14: Renamed the app WebApp → MisaApp (projects `MisaApp.Api`/`MisaApp.Api.Tests`, `MisaApp.slnx`, compose project `misaapp`, database `MisaApp`). Constitution v1.0.1.
+- 2026-10-16: The app has no database any more (specs/003-remove-chat-database). Removed `/db-migration` and the EF/SQL steps from `/feature`, `/verify`, `/daily-start` and `/bugfix`. Constitution v3.0.0.

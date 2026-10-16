@@ -8,11 +8,6 @@ output "image_tag" {
   value       = trimprefix(azurerm_container_app.api.template[0].container[0].image, "${local.acr_login_server}/misaapp-api:")
 }
 
-output "migrate_job_name" {
-  description = "Container Apps job that applies EF Core migrations."
-  value       = azurerm_container_app_job.migrate.name
-}
-
 output "resource_group_name" {
   description = "Resource group of this environment."
   value       = data.azurerm_resource_group.env.name

@@ -147,21 +147,6 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=misaapp-api
           cache-to: type=gha,mode=max,scope=misaapp-api
-      - name: misaapp-migrator
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: backend
-          target: migrator
-          push: true
-          provenance: false
-          sbom: false
-          tags: ${{ env.REGISTRY }}/misaapp-migrator:${{ github.sha }}
-          build-args: SOURCE_COMMIT=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=misaapp-migrator
-          cache-to: type=gha,mode=max,scope=misaapp-migrator
       - name: misaapp-web
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -216,7 +201,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Check images exist
         run: |
-          for repo in misaapp-api misaapp-web misaapp-migrator; do
+          for repo in misaapp-api misaapp-web; do
             if ! az acr repository show --name "$ACR_NAME" --image "$repo:$IMAGE_TAG" -o none; then
               echo "::error::Image tag $IMAGE_TAG not found in registry ($repo)"
               exit 1
@@ -316,9 +301,6 @@ jobs:
       ENV_CODE: ${{ needs.resolve.outputs.env_code }}
       IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
       ARM_CLIENT_ID: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
-      RESOURCE_GROUP: rg-misaapp-${{ needs.resolve.outputs.environment }}
-      MIGRATE_JOB: caj-misaapp-${{ needs.resolve.outputs.environment }}-migrate
-      AZURE_EXTENSION_USE_DYNAMIC_INSTALL: yes_without_prompt
     defaults:
       run:
         working-directory: infra/environment
@@ -392,16 +374,17 @@ jobs:
             exit 1
           fi
 
-      # 5. First deployment: the migrate job and database must exist before migrating, and the apps
-      #    need the migrated schema, so create those first and re-plan the rest (design correction 3).
+      # 5. First deployment: the secret preflight needs the vault, and the apps need their role
+      #    assignments to have propagated before they pull images or read secrets, so create those
+      #    first and re-plan the rest (design correction 3).
       - name: First deployment
         id: first
         if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push' && steps.capture.outputs.prev == ''
         run: |
           terraform apply -auto-approve -input=false -var-file="$ENVIRONMENT.tfvars" -var "image_tag=$IMAGE_TAG" \
-            -target=azurerm_container_app_job.migrate \
-            -target=azurerm_mssql_database.main \
-            -target=azapi_resource.free_database
+            -target=azurerm_key_vault.main \
+            -target=azurerm_role_assignment.acr_pull \
+            -target=azurerm_role_assignment.api_kv_secrets_user
           echo "First deployment: re-planned after targeted apply." >>"$GITHUB_STEP_SUMMARY"
 
       # Runs after the first-deployment step, which creates the vault. Lists names only
@@ -421,36 +404,13 @@ jobs:
           fi
           echo "gemini-api-key exists in $vault."
 
-      # 6. Migrate before the new revision starts. On failure nothing is applied and the previous
-      #    version keeps serving.
-      - name: Migrate database
-        id: migrate
-        if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push'
-        run: |
-          # A start request's template replaces the job's, and `az containerapp job start --image`
-          # sends one without the env vars. Send the job's own template with only the image swapped.
-          job_id=$(az resource show -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" --resource-type Microsoft.App/jobs --query id -o tsv)
-          template=$(az rest --method get --url "https://management.azure.com$job_id?api-version=2024-03-01" \
-            --query properties.template -o json |
-            jq -c --arg image "$ACR_NAME.azurecr.io/misaapp-migrator:$IMAGE_TAG" \
-              '{containers: [.containers[] | if .name == "migrate" then .image = $image else . end
-                | .resources |= with_entries(select(.value != ""))]}')
-          execution=$(az rest --method post --url "https://management.azure.com$job_id/start?api-version=2024-03-01" \
-            --body "$template" --query name -o tsv)
-          echo "execution=$execution" >>"$GITHUB_OUTPUT"
-          if ! bash ../scripts/wait-job-execution.sh "$RESOURCE_GROUP" "$MIGRATE_JOB" "$execution"; then
-            az containerapp job stop -g "$RESOURCE_GROUP" -n "$MIGRATE_JOB" --job-execution-name "$execution" -o none || true
-            echo "Migration $execution failed: nothing was applied, the previous version keeps serving." >>"$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.guard.outputs.superseded != 'true'
         with:
           name: ${{ needs.plan.outputs.artifact }}
           path: infra/environment
 
-      # 7. Apply the approved plan. It is re-planned only after a first-deployment targeted apply, or
+      # 6. Apply the approved plan. It is re-planned only after a first-deployment targeted apply, or
       #    on develop (no approval) when another deploy changed the state since the plan.
       - name: Apply
         id: apply
@@ -482,7 +442,7 @@ jobs:
         if: steps.guard.outputs.superseded != 'true' && steps.apply.outcome == 'success'
         run: echo "web_url=$(terraform output -raw web_url)" >>"$GITHUB_OUTPUT"
 
-      # 8. Smoke test against the live environment: page, health, and the exact commit.
+      # 7. Smoke test against the live environment: page, health, and the exact commit.
       - name: Smoke test
         id: smoke
         if: steps.guard.outputs.superseded != 'true'
@@ -502,7 +462,7 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      # 9. Automatic rollback (push only). The job stays failed so GitHub notifies the team (FR-022).
+      # 8. Automatic rollback (push only). The job stays failed so GitHub notifies the team (FR-022).
       - name: Roll back after failed smoke test
         if: >-
           failure() && steps.smoke.outcome == 'failure' && github.event_name == 'push'
@@ -519,7 +479,6 @@ jobs:
         env:
           WEB_URL: ${{ steps.out.outputs.web_url }}
           PREV: ${{ steps.capture.outputs.prev }}
-          EXECUTION: ${{ steps.migrate.outputs.execution }}
           REASON: ${{ inputs.reason }}
           OUTCOME: ${{ job.status }}
         run: |
@@ -531,6 +490,5 @@ jobs:
             echo "| Environment URL | ${WEB_URL:-n/a} |"
             echo "| Deployed commit | \`$IMAGE_TAG\` |"
             echo "| Previous commit | \`${PREV:-none}\` |"
-            echo "| Migration execution | ${EXECUTION:-skipped} |"
             echo "| Trigger | $GITHUB_EVENT_NAME by @$GITHUB_ACTOR${REASON:+ ($REASON)} |"
           } >>"$GITHUB_STEP_SUMMARY"

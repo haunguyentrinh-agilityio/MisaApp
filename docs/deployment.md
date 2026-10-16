@@ -22,8 +22,8 @@ from `stag` to `main`) and merge it.
 `.github/workflows/deploy.yml` runs on every push to those branches:
 
 1. **resolve**: maps the branch to one environment. Every later name and identity comes from it.
-2. **build**: builds `misaapp-api`, `misaapp-web` and `misaapp-migrator` once, tagged with the full
-   commit SHA, and pushes them to the shared registry `crmisaapp<suffix>`.
+2. **build**: builds `misaapp-api` and `misaapp-web` once, tagged with the full commit SHA, and pushes
+   them to the shared registry `crmisaapp<suffix>`.
 3. **checks**: runs `ci.yml` again, with E2E against those exact images.
 4. **plan**: a read-only identity runs `terraform plan`. The plan appears in the run summary under
    "Planned changes for <env>".
@@ -31,15 +31,15 @@ from `stag` to `main`) and merge it.
    1. Stops with "Superseded by <sha>" if the branch has moved on since this run started.
    2. Checks the Terraform state is reachable. On `develop` it also applies `infra/shared`.
    3. Records the commit currently deployed (the rollback target).
-   4. On the first deployment only, creates the database and migrate job first.
+   4. On the first deployment only, creates the Key Vault and the apps' role assignments first, so
+      they have propagated before the apps start.
    5. Checks the Gemini secret exists when `gemini_enabled = true` (the name only; the value is
       never read).
-   6. Runs the migrate job with the new migrator image. If it fails, nothing else changes.
-   7. Applies exactly the approved plan. Container Apps starts the new revision and moves traffic
+   6. Applies exactly the approved plan. Container Apps starts the new revision and moves traffic
       once it passes its readiness probe.
-   8. Runs the `@smoke` Playwright tests against the live URL and checks `/api/version` reports this
+   7. Runs the `@smoke` Playwright tests against the live URL and checks `/api/version` reports this
       commit.
-   9. If the smoke test fails, re-applies the previous commit's images and fails the run, so GitHub
+   8. If the smoke test fails, re-applies the previous commit's images and fails the run, so GitHub
       notifies the team.
 
 Deploys to one environment are queued, never run in parallel, and never cancelled halfway.
@@ -48,7 +48,7 @@ Deploys to one environment are queued, never run in parallel, and never cancelle
 
 The run waits on **Review deployments**. Before approving, open the run summary and read the
 `plan` job's "Planned changes" section. Approving applies exactly that plan. Usually the plan is just
-an image tag change on the two apps and the migrate job.
+an image tag change on the two apps.
 
 - **Approve**: the deploy proceeds as above.
 - **Reject**: nothing is deployed; GitHub records who rejected it.
@@ -68,26 +68,41 @@ gh workflow run deploy.yml --ref main    -f environment=production -f image_tag=
 ```
 
 - Run it from the environment's branch; any other `--ref` fails in `resolve`.
-- `verify-tag` fails with "Image tag <sha> not found in registry" if any of the three images is gone.
+- `verify-tag` fails with "Image tag <sha> not found in registry" if the API or web image is gone.
 - Stage and production still need approval. The environment history shows the actor and reason.
-- A rollback doesn't run migrations and doesn't revert the schema (see the rule below).
+- See the limits below before rolling back past the database removal.
 - Redeploying the current tag is safe and changes nothing.
 
 Find earlier SHAs in the environment's deployment history on GitHub, or with
 `git log --first-parent <branch>`.
 
-## Database migrations: backward compatibility rule
+## Rollback limits after the database removal
 
-The migrate job runs **before** the new revision starts, while the old revision keeps serving, and a
-rollback keeps the new schema. So every migration must work with the previous release's code:
+The app stopped using its database in [specs/003-remove-chat-database](../specs/003-remove-chat-database/spec.md),
+which ships in three releases:
 
-- **Expand, then contract.** Add nullable columns or new tables first; remove or rename columns in a
-  later release, after no deployed code uses them.
-- No column renames or type changes in one step; add the new column, backfill, switch the code, then
-  drop the old one later.
-- Don't add a `NOT NULL` column without a default.
+| Release | What changes | Rolling back to a commit from before Release A |
+| ------- | ------------ | ---------------------------------------------- |
+| A (code) | The app, CI and deploy no longer use the database. Azure SQL, its data, the migrator identity, and the API's SQL env vars stay. | Works: the old image finds its database, schema and connection string. It shows only conversations saved before A. |
+| B (infra) | Deletes the SQL servers and databases (all stored conversations, no backup), the nonprod vault, CI database cleanup, and the migrator identity and images. | **Not possible**: the old image needs the database. Roll back only to commits from Release A onward. |
+| C (providers) | Removes Terraform providers that only the database used. | No further change. |
 
-`/db-migration` checks this. Never edit an applied migration.
+Release B is merged only after Release A has been deployed and is healthy in develop, stage **and**
+production; Release C only after B is applied everywhere.
+
+### Release B and C runbook
+
+1. Before merging B, review the destroy plans locally for `infra/shared` and each environment
+   ([quickstart B1](../specs/003-remove-chat-database/quickstart.md#b1-before-merging-review-the-destroy-plans-locally)).
+   Only the listed SQL, vault and migrator resources may be destroyed. Removing their resource
+   blocks also removes their `prevent_destroy` guard, so this review is the safeguard.
+2. Merge B to `develop`; it deploys like any change (the develop apply of `infra/shared` deletes the
+   nonprod SQL server and vault). Promote to `stag` and `main` with the usual approvals, reading each
+   plan.
+3. After each environment applies B, run the checks in
+   [quickstart B2](../specs/003-remove-chat-database/quickstart.md#b2-after-b-is-applied-in-each-environment).
+4. Then open the Release C PR
+   ([quickstart C](../specs/003-remove-chat-database/quickstart.md#release-c--remove-unused-terraform-providers-follow-up-pr)).
 
 ## Secrets
 
@@ -95,7 +110,7 @@ Secrets live only in Azure Key Vault; GitHub has none (workflows use OIDC).
 
 | Vault                       | Secret               | Used by                               |
 | --------------------------- | -------------------- | ------------------------------------- |
-| `kv-misaapp-np-<suffix>`    | `sql-admin-password` | CI E2E, local development             |
+| `kv-misaapp-np-<suffix>`    | `sql-admin-password` | nothing (deleted in Release B)        |
 | `kv-misaapp-<code>-<suffix>` | `gemini-api-key`    | the API app (`<code>`: `dev`, `stg`, `prd`) |
 
 Add or rotate a secret without echoing it (needs Key Vault Secrets Officer on that vault):
@@ -132,47 +147,23 @@ subjects such as `repo:<owner>@<owner-id>/<repo>@<repo-id>:pull_request`. If `az
 a rename, transfer, or switching immutable subjects on or off): re-run the bootstrap to update the
 credentials.
 
-## Local development on Azure SQL
-
-There is no local SQL container. Each developer has a database on the shared nonprod server:
-
-1. Add your alias (`^[a-z0-9]{2,12}$`) to `developers` in `infra/shared/terraform.tfvars` through a PR
-   to `develop`. The deploy creates `sqldb-misaapp-dev-<alias>`.
-2. Ask an admin for **Key Vault Secrets User** on `kv-misaapp-np-<suffix>`.
-3. Open the firewall to your IP (re-run when your IP changes):
-   `infra/scripts/allow-my-ip.sh --alias <alias> --suffix <suffix>`.
-4. Copy `.env.example` to `.env` and fill in `SQL_CONNECTION_STRING`. Get the password with
-   `az keyvault secret show --vault-name kv-misaapp-np-<suffix> --name sql-admin-password --query value -o tsv`
-   and paste it into `.env` directly; don't put it in shell history or commit it.
-5. `docker compose up -d --build`. The backend applies migrations to your database on startup. It
-   refuses to start if the database doesn't exist yet (wait for the develop deploy from step 1),
-   because EF Core would otherwise create it as a billed provisioned database.
-
-For `dotnet run` outside Docker, set the same connection string with
-`dotnet user-secrets set "ConnectionStrings:Default" "<connection string>" --project backend/src/MisaApp.Api`.
-
 ## Cost notes
 
-| Database / service      | SKU                                         | Notes |
-| ----------------------- | ------------------------------------------- | ----- |
-| Developer databases     | serverless `GP_S_Gen5_1`, free offer        | Up to 10 free per subscription; auto-pause after 60 min |
-| CI databases            | Basic                                        | Exist for about 15 minutes per run; an hourly sweep drops leftovers |
-| develop, stage          | serverless `GP_S_Gen5_1`, auto-pause 60 min | First request after a pause waits about a minute |
-| production              | Standard S0, always on                      | Scale up in `production.tfvars` |
+| Service                 | SKU                                          | Notes |
+| ----------------------- | -------------------------------------------- | ----- |
 | Container Apps          | Consumption                                  | develop and stage scale to zero; production keeps one replica |
 | Registry                | Standard                                     | Daily purge task `purge-old-images` |
+| Azure SQL (until Release B) | serverless in develop/stage, Standard S0 in production | Unused by the app; deleted in Release B |
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | ------- | ------------- |
-| `Migration <execution> failed` | Open Log Analytics `log-misaapp-<env>` and query `ContainerAppConsoleLogs_CL` for the execution name. Fix the migration in a new PR; the old version is still serving. |
-| Apply fails with a revision that never becomes ready | Check the API's console logs (startup errors, database access). Traffic stays on the previous revision. |
+| Apply fails with a revision that never becomes ready | Check the API's console logs (startup errors, Key Vault access). Traffic stays on the previous revision. |
 | `Key Vault secret gemini-api-key missing in …` | Set the secret as shown above, then re-run the job. |
 | `Terraform state for <env> unreachable` | Check the state storage account and the deploy identity's role on `tfstate-<env>`. |
 | `plan` fails with `failed to lock azure state` … `AuthorizationPermissionMismatch` | The environment's `environment.tfstate` doesn't exist yet, and the read-only plan identity can't create it. Re-run the bootstrap (it creates the empty state), then re-run the workflow. |
 | `Superseded by <sha>` | Expected: a newer commit is on the branch. Approve the newer run instead. |
-| `Apply infra/shared` fails with `Resource already exists` for `developer_database["<alias>"]` | Something other than Terraform created `sqldb-misaapp-dev-<alias>`, usually a backend started before the database existed. It isn't on the free offer, which can only be chosen at creation, so don't import it: delete it (`az sql db delete -g rg-misaapp-shared -s sql-misaapp-nonprod-<suffix> -n sqldb-misaapp-dev-<alias>`) and re-run the deploy. |
 | `state changed since approved plan` | Another deploy finished first. Re-run all jobs and approve the new plan. |
 | `Smoke failed: rolled back to <sha>` | Download the smoke report artifact; fix forward with a new PR. |
 | `plan` fails on `prevent_destroy` | The change would delete a database, SQL server or Key Vault. Rework the change. |

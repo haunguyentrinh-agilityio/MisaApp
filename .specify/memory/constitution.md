@@ -4,9 +4,9 @@
 
 ### I. Feature-Sliced Code
 
-- Backend code for a feature MUST live in `backend/src/MisaApp.Api/Features/<Feature>/`: entities and
-  their EF configuration, contracts, a scoped service, a `Map<Feature>Endpoints()` group under
-  `/api/<feature>`, and an `Add<Feature>()` DI extension.
+- Backend code for a feature MUST live in `backend/src/MisaApp.Api/Features/<Feature>/`: contracts,
+  a scoped service, a `Map<Feature>Endpoints()` group under `/api/<feature>`, and an
+  `Add<Feature>()` DI extension.
 - Frontend code for a feature MUST live in `frontend/src/features/<feature>/`: components, a typed
   `<feature>Api.ts`, CSS, and tests.
 - Only genuinely cross-cutting code goes in `backend/.../Data/` or `frontend/src/lib/`.
@@ -20,14 +20,14 @@ one-to-one onto code.
 ### II. Tests Ship With Every Change (NON-NEGOTIABLE)
 
 - Every endpoint MUST have an integration test through `ApiFactory`
-  (`WebApplicationFactory<Program>` + SQLite in-memory, LLM replaced by `FakeChatModel`).
+  (`WebApplicationFactory<Program>`, LLM replaced by `FakeChatModel`).
 - Every component MUST have a Vitest + React Testing Library test that queries by role/label.
 - Every user-visible flow MUST have a Playwright test that runs against the Docker stack.
 - Bug fixes MUST start with a test that reproduces the bug and fails before the fix.
 - Every acceptance scenario in a spec MUST map to at least one automated test in `tasks.md`.
 
 Rationale: the three layers are cheap to run and together cover logic, UI, and the real stack
-(Azure SQL, nginx, migrations).
+(nginx, the built images).
 
 ### III. Explicit API Contract
 
@@ -50,30 +50,28 @@ sides rather than by versioning.
 
 Rationale: keeps tests deterministic and free, and keeps the provider swappable.
 
-### V. Reproducible Docker Environment on Azure SQL
+### V. Reproducible Docker Environment
 
 - Every app service (frontend, backend, Playwright) MUST build and run through `compose.yaml`;
   `compose.dev.yaml` is the hot-reload overlay.
-- The database is Azure SQL Database in every environment, including local development and CI.
-  No SQL Server container is part of the stack; the backend gets its connection string from
-  configuration (`SQL_CONNECTION_STRING` in `.env` → `ConnectionStrings__Default`).
-- Local and CI stacks MUST use databases isolated from deployed environments; they MUST NOT
-  connect to the develop, stage, or production database.
-- A feature is not done until it works on the production-like stack
-  (`docker compose up -d --build`) against Azure SQL, not just the dev servers.
+- The stack has no database. Chat content MUST NOT be stored server-side (no database, file, or
+  cache that outlives the request). Adding persistent storage requires an amendment to this
+  constitution.
+- A feature is not done until it works on the production-like stack (`docker compose up -d --build`),
+  not just the dev servers.
 - Toolchain versions are pinned: .NET 10 SDK (`global.json`), Node >= 24 and pnpm
   (`packageManager`), the Playwright image tag matching `@playwright/test`.
 
-Rationale: "works on my machine" is ruled out when every check runs against the same images, and
-running Azure SQL everywhere means the engine, its limits, and its behavior are the same locally as
-in production. The accepted trade-off: local development and E2E runs need network access to Azure.
+Rationale: "works on my machine" is ruled out when every check runs against the same images, and a
+stack with no stateful services runs anywhere with no external dependency except the optional AI
+provider.
 
 ## Security & Data
 
 - Secrets MUST NOT be read, printed, or committed. `.env` is git-ignored; configuration flows
   `.env` → compose env vars → `Section__Key`; local runs use `dotnet user-secrets`.
-- Schema changes MUST go through an EF Core migration; applied migrations MUST NOT be edited.
-- Timestamps are stored as UTC `DateTime` named `*Utc`; code takes time from `TimeProvider`.
+- Chat content is kept only in the visitor's browser; the server sees it only for the duration of
+  a request (and forwards it to the AI provider).
 - User-supplied text has explicit length limits enforced on both server and client.
 
 ## Development Workflow & Quality Gates
@@ -100,4 +98,4 @@ in production. The accepted trade-off: local development and E2E runs need netwo
 - `/speckit-analyze` treats a conflict with a MUST in this document as CRITICAL. A justified
   exception is recorded in the plan's Complexity Tracking table, never silently.
 
-**Version**: 2.0.0 | **Ratified**: 2026-10-14 | **Last Amended**: 2026-10-14
+**Version**: 3.0.0 | **Ratified**: 2026-10-14 | **Last Amended**: 2026-10-16
