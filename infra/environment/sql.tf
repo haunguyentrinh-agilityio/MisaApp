@@ -1,5 +1,6 @@
-# Entra-only server: the migrator identity is its admin and creates the API identity's user
-# (backend/deploy/migrate.sh). No SQL logins, so there is no password to store.
+# Entra-only server: the migrator identity is its admin and created the API identity's user (the
+# former migrate job). No SQL logins. Kept until Release B of specs/003-remove-chat-database so a
+# rollback to an image that still uses the database keeps working.
 resource "azurerm_mssql_server" "main" {
   name                          = local.sql_server_name
   resource_group_name           = data.azurerm_resource_group.env.name

@@ -10,7 +10,7 @@ Bug: **$ARGUMENTS**
 
 1. **Gather evidence**
    - Error text, stack traces, `docker compose logs --since 1h backend frontend`, browser console (ask the user if needed).
-   - Identify the layer: frontend, API, EF/SQL, Gemini, Docker/infra.
+   - Identify the layer: frontend (including `localStorage`), API, Gemini, Docker/infra.
 
 2. **Reproduce with a test** — before changing production code:
    - API/data bug → xUnit integration test with `ApiFactory`.

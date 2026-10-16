@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 // Post-deploy smoke tests (PW_SMOKE=1). They never send a chat message, so they don't spend
-// Gemini quota or write to the database. In the full suite EXPECTED_* are unset.
+// Gemini quota. In the full suite EXPECTED_* are unset.
 const expectedCommit = process.env.EXPECTED_COMMIT
 const expectedEnvironment = process.env.EXPECTED_ENVIRONMENT
 

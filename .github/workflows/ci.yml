@@ -1,6 +1,6 @@
 # Quality checks. Each job is a required status check on develop, stag and main (FR-023), and
 # deploy.yml calls this workflow as its gate. Nothing here touches develop, stage or production;
-# e2e only creates and drops one sqldb-misaapp-ci-* database on the nonprod server.
+# the app has no database, so e2e needs Azure only to pull registry images on deploy runs.
 name: ci
 
 on:
@@ -142,45 +142,23 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    env:
-      NAME_SUFFIX: ${{ vars.NAME_SUFFIX }}
-      DB_NAME: sqldb-misaapp-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      RULE_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      # Fork PRs get no OIDC token for this repository, so they can't reach Azure.
-      - name: Fork check
-        id: fork
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "::notice::e2e skipped: pull requests from forks have no Azure access. A maintainer re-runs it from a branch."
-          echo "skip=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.fork.outputs.skip != 'true'
         with:
           persist-credentials: false
+      # No GEMINI_API_KEY: the API uses its echo model, so assertions never depend on Gemini (FR-004).
+      - name: Start stack (build)
+        if: inputs.image_tag == ''
+        run: docker compose up -d --build backend frontend
+      # Deploy runs test the exact images they are about to ship.
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        if: steps.fork.outputs.skip != 'true'
+        if: inputs.image_tag != ''
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Create ephemeral database
-        id: db
-        if: steps.fork.outputs.skip != 'true'
-        run: bash infra/scripts/ci-database.sh create "$DB_NAME" "$RULE_NAME"
-      - name: Connection string
-        if: steps.fork.outputs.skip != 'true'
-        run: |
-          pw=$(az keyvault secret show --vault-name "kv-misaapp-np-$NAME_SUFFIX" --name sql-admin-password --query value -o tsv)
-          echo "::add-mask::$pw"
-          echo "SQL_CONNECTION_STRING=Server=tcp:sql-misaapp-nonprod-$NAME_SUFFIX.database.windows.net,1433;Database=$DB_NAME;User Id=misaappadmin;Password=$pw;Encrypt=True" >> "$GITHUB_ENV"
-      # No GEMINI_API_KEY: the API uses its echo model, so assertions never depend on Gemini (FR-004).
-      - name: Start stack (build)
-        if: steps.fork.outputs.skip != 'true' && inputs.image_tag == ''
-        run: docker compose up -d --build backend frontend
-      # Deploy runs test the exact images they are about to ship.
       - name: Start stack (registry images)
-        if: steps.fork.outputs.skip != 'true' && inputs.image_tag != ''
+        if: inputs.image_tag != ''
         env:
           ACR_NAME: ${{ vars.ACR_NAME }}
           IMAGE_TAG: ${{ inputs.image_tag }}
@@ -189,10 +167,9 @@ jobs:
           export ACR_LOGIN_SERVER="$ACR_NAME.azurecr.io"
           docker compose -f compose.yaml -f compose.ci.yaml up -d --pull always backend frontend
       - name: Playwright
-        if: steps.fork.outputs.skip != 'true'
         run: docker compose --profile e2e run --rm --build playwright
       - name: Upload Playwright report
-        if: always() && steps.fork.outputs.skip != 'true'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report-${{ github.run_attempt }}
@@ -200,8 +177,5 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
       - name: Container logs
-        if: failure() && steps.fork.outputs.skip != 'true'
+        if: failure()
         run: docker compose logs --no-color backend frontend
-      - name: Drop ephemeral database
-        if: always() && steps.fork.outputs.skip != 'true'
-        run: bash infra/scripts/ci-database.sh drop "$DB_NAME" "$RULE_NAME"

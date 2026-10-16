@@ -446,6 +446,4 @@ cat <<EOF
 Next:
   - Set the Gemini key for each environment that enables it, after its first deploy, e.g.
       az keyvault secret set --vault-name kv-misaapp-prd-$SUFFIX --name gemini-api-key --file <(read -rs k; printf %s "\$k")
-  - Developers: add your alias to infra/shared/terraform.tfvars, then run infra/scripts/allow-my-ip.sh
-    (see docs/deployment.md).
 EOF

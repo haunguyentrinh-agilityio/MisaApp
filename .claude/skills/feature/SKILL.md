@@ -23,22 +23,22 @@ The rules every step is checked against are in `.specify/memory/constitution.md`
 
 ## 3. Plan ⏸
 - Run `/speckit-plan` with this repo's stack as input: .NET 10 minimal APIs in a feature folder,
-  EF Core 10 on SQL Server, React 19 + Vite feature folder, xUnit v3 / Vitest + RTL / Playwright.
+  no database (the server is stateless), React 19 + Vite feature folder, xUnit v3 / Vitest + RTL /
+  Playwright.
 - Check `plan.md`, `data-model.md`, and `contracts/` against `CLAUDE.md`, `backend/CLAUDE.md`, and
-  `frontend/CLAUDE.md`. Call out risks: migrations on existing data, breaking API changes, LLM
-  cost/latency.
-- ⏸ Show the Constitution Check result, the API contract (routes, JSON, status codes), and the
-  schema changes.
+  `frontend/CLAUDE.md`. Call out risks: breaking API changes, anything that would need server-side
+  storage (a constitution amendment), LLM cost/latency.
+- ⏸ Show the Constitution Check result and the API contract (routes, JSON, status codes).
 
 ## 4. Tasks ⏸
 - Run `/speckit-tasks`, then `/speckit-analyze`. Fix every CRITICAL/HIGH finding in the source
   artifact and re-run analyze until it is clean.
 - Make sure `tasks.md` includes: integration tests via `ApiFactory`, RTL tests, Playwright tests for
-  each user-visible acceptance scenario, and a `/db-migration` task if the schema changes.
+  each user-visible acceptance scenario.
 - ⏸ Show the task phases and counts.
 
 ## 5. Implement
-- Run `/speckit-implement`. For schema changes follow `/db-migration`.
+- Run `/speckit-implement`.
 - After each phase: `cd backend && dotnet test`; in `frontend/`:
   `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 - E2E: `docker compose up -d --build`, then `docker compose --profile e2e run --rm --build playwright`.
@@ -53,5 +53,5 @@ The rules every step is checked against are in `.specify/memory/constitution.md`
 - Update `docs/architecture.md` if the shape of the system changed; move the backlog item to
   **Done** with a link to the spec.
 - Self-review the diff (`git diff`): naming, dead code, secrets, missing tests.
-- ⏸ Summarize what changed (files, endpoints, migrations) and propose a commit message. Don't
+- ⏸ Summarize what changed (files, endpoints, config) and propose a commit message. Don't
   commit unless asked.

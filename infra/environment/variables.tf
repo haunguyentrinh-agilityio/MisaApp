@@ -24,7 +24,7 @@ variable "suffix" {
 }
 
 variable "image_tag" {
-  description = "Full git commit SHA of the images to run (misaapp-api, misaapp-web, misaapp-migrator)."
+  description = "Full git commit SHA of the images to run (misaapp-api, misaapp-web)."
   type        = string
 
   validation {
