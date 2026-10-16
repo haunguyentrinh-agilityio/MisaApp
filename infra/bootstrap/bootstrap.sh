@@ -225,6 +225,23 @@ else
   record created "custom role '$SECRET_READER_ROLE'"
 fi
 
+# Custom role for the develop deploy identity: Terraform reads the deletion details of the nonprod
+# Key Vault when it destroys it. That action is checked at subscription scope, which no
+# resource-group role grants.
+DELETED_VAULT_READER_ROLE="MisaApp Deleted Key Vault Reader"
+deleted_vault_role_json=$(jq -cn --arg name "$DELETED_VAULT_READER_ROLE" --arg s "/subscriptions/$SUBSCRIPTION_ID" '{
+  Name: $name, IsCustom: true,
+  Description: "Read soft-deleted Key Vault details (Terraform destroy of a purge-protected vault).",
+  Actions: ["Microsoft.KeyVault/locations/deletedVaults/read"],
+  NotActions: [], DataActions: [], NotDataActions: [], AssignableScopes: [$s] }')
+existing_deleted_vault_role=$(az role definition list --custom-role-only true -n "$DELETED_VAULT_READER_ROLE" --scope "/subscriptions/$SUBSCRIPTION_ID" --query '[].id' -o tsv)
+if [[ -n "$existing_deleted_vault_role" ]]; then
+  record exists "custom role '$DELETED_VAULT_READER_ROLE'"
+else
+  az role definition create --role-definition "$deleted_vault_role_json" -o none
+  record created "custom role '$DELETED_VAULT_READER_ROLE'"
+fi
+
 # CI: pull requests plus the checks that deploy.yml runs on each branch push (no environment).
 ensure_identity id-misaapp-gh-ci
 ensure_federation id-misaapp-gh-ci gh-pull-request pull_request
@@ -273,6 +290,7 @@ ensure_role "$dev_deploy" ServicePrincipal Contributor "$SHARED_SCOPE"
 ensure_role "$dev_deploy" ServicePrincipal "Storage Blob Data Contributor" "$(container_scope tfstate-shared)"
 ensure_role "$dev_deploy" ServicePrincipal "Role Based Access Control Administrator" "$SHARED_SCOPE" \
   "$(rbac_condition "$ROLE_ACR_PULL" "$ROLE_KV_SECRETS_USER")"
+ensure_role "$dev_deploy" ServicePrincipal "$DELETED_VAULT_READER_ROLE" "/subscriptions/$SUBSCRIPTION_ID"
 
 # ---------------------------------------------------------------------------------------------
 section "Part 3: GitHub settings ($REPO)"
