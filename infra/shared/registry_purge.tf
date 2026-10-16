@@ -14,7 +14,7 @@ resource "azurerm_container_registry_task" "purge_old_images" {
     task_content = base64encode(<<-YAML
       version: v1.1.0
       steps:
-        - cmd: acr purge --filter 'misaapp-api:.*' --filter 'misaapp-web:.*' --filter 'misaapp-migrator:.*' --ago 90d --keep 30 --untagged
+        - cmd: acr purge --filter 'misaapp-api:.*' --filter 'misaapp-web:.*' --ago 90d --keep 30 --untagged
           disableWorkingDirectoryOverride: true
           timeout: 3600
     YAML

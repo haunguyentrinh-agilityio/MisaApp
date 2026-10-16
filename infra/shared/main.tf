@@ -10,4 +10,3 @@ data "azurerm_resource_group" "shared" {
   name = "rg-misaapp-shared"
 }
 
-data "azurerm_client_config" "current" {}

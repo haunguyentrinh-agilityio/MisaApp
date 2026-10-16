@@ -17,8 +17,3 @@ output "key_vault_name" {
   description = "Key Vault holding this environment's secrets (gemini-api-key)."
   value       = azurerm_key_vault.main.name
 }
-
-output "sql_server_fqdn" {
-  description = "Fully qualified name of this environment's SQL server."
-  value       = azurerm_mssql_server.main.fully_qualified_domain_name
-}

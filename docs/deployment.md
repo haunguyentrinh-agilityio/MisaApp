@@ -101,7 +101,11 @@ production; Release C only after B is applied everywhere.
    plan.
 3. After each environment applies B, run the checks in
    [quickstart B2](../specs/003-remove-chat-database/quickstart.md#b2-after-b-is-applied-in-each-environment).
-4. Then open the Release C PR
+4. After `infra/shared` applies, narrow the RBAC Administrator condition on
+   `id-misaapp-gh-deploy-develop` (scope `rg-misaapp-shared`) to ACR pull and Key Vault Secrets User
+   only. `bootstrap.sh` sets the condition only when it creates the assignment, so an existing one
+   keeps the SQL role IDs until changed by hand.
+5. Then open the Release C PR
    ([quickstart C](../specs/003-remove-chat-database/quickstart.md#release-c--remove-unused-terraform-providers-follow-up-pr)).
 
 ## Secrets
@@ -110,7 +114,6 @@ Secrets live only in Azure Key Vault; GitHub has none (workflows use OIDC).
 
 | Vault                       | Secret               | Used by                               |
 | --------------------------- | -------------------- | ------------------------------------- |
-| `kv-misaapp-np-<suffix>`    | `sql-admin-password` | nothing (deleted in Release B)        |
 | `kv-misaapp-<code>-<suffix>` | `gemini-api-key`    | the API app (`<code>`: `dev`, `stg`, `prd`) |
 
 Add or rotate a secret without echoing it (needs Key Vault Secrets Officer on that vault):
@@ -153,7 +156,6 @@ credentials.
 | ----------------------- | -------------------------------------------- | ----- |
 | Container Apps          | Consumption                                  | develop and stage scale to zero; production keeps one replica |
 | Registry                | Standard                                     | Daily purge task `purge-old-images` |
-| Azure SQL (until Release B) | serverless in develop/stage, Standard S0 in production | Unused by the app; deleted in Release B |
 
 ## Troubleshooting
 

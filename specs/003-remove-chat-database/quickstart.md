@@ -84,7 +84,8 @@ terraform -chdir=infra/environment plan -var-file=develop.tfvars -var "image_tag
 
 Expected: only destroys of SQL servers/databases, the firewall rule, the migrator identity, the
 nonprod Key Vault + `sql-admin-password`, CI SQL/Key Vault role assignments, and an in-place update of
-the API container app (SQL env vars removed, startup probe shortened). Nothing else is destroyed.
+the API container app (SQL env vars and startup probe removed). Nothing else is destroyed. The
+`prevent_destroy` guards go with their resource blocks, so this review is the only check on them.
 
 ### B2. After B is applied in each environment
 
@@ -93,7 +94,8 @@ az resource list --resource-type Microsoft.Sql/servers --query "[?contains(name,
 az acr repository delete --name <acr> --repository misaapp-migrator --yes                               # one time, after B reaches develop
 ```
 
-Expected: smoke test passes in each environment; no SQL server remains after production.
+Expected: smoke test passes in each environment; no SQL server remains after production. Then narrow
+the RBAC condition on `id-misaapp-gh-deploy-develop` by hand ([deployment.md](../../docs/deployment.md#release-b-and-c-runbook), step 4).
 
 ## Release C — remove unused Terraform providers (follow-up PR)
 

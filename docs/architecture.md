@@ -41,13 +41,10 @@ and the Vite dev server with bind mounts and polling file watchers (needed for W
   Apps run in single-revision mode; traffic moves once the new revision is ready.
 - Everything is Terraform: `infra/shared` (registry) and `infra/environment` (one state per
   environment, `<env>.tfvars`). Pipeline and operations: [deployment.md](deployment.md).
-- **Until Release B** of [specs/003-remove-chat-database](../specs/003-remove-chat-database/tasks.md)
-  reaches every environment, the former database infrastructure is still provisioned but unused by
-  the code: the Azure SQL server and database per environment (with the migrator identity as its
-  Entra admin), the API's `ConnectionStrings__Default`/`Database__MigrateOnStartup` env vars, the
-  shared nonprod SQL server and `kv-misaapp-np-<suffix>`, and old `misaapp-migrator` images. They stay
-  so a rollback to a commit from before the database removal still runs; see
-  [deployment.md](deployment.md#rollback-limits-after-the-database-removal).
+- The app has no database; chats live in the visitor's browser and the API forwards them to the model.
+  The Azure SQL resources were removed in Release B of
+  [specs/003-remove-chat-database](../specs/003-remove-chat-database/tasks.md); what that means for
+  rollbacks is in [deployment.md](deployment.md#rollback-limits-after-the-database-removal).
 
 ## Backend
 
