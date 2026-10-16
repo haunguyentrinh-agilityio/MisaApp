@@ -51,8 +51,6 @@ SECRET_READER_ROLE="MisaApp Container Apps Secret Reader"
 # Role definition IDs used in ABAC conditions (built-in roles, same in every tenant).
 ROLE_ACR_PULL="7f951dda-4ed3-4680-a7ca-43fe172d538d"
 ROLE_KV_SECRETS_USER="4633458b-17de-408a-b874-0445c86b69e6" # gitleaks:allow (public built-in role ID)
-ROLE_SQL_DB_CONTRIBUTOR="9b7fa17d-e63e-47b0-bb0a-15c516ac86ec"
-ROLE_SQL_SERVER_CONTRIBUTOR="6d8ee4ec-f05a-4a1d-8b00-a9b17e38b437"
 
 SUMMARY=()
 record() { SUMMARY+=("$(printf '%-8s %s' "$1" "$2")"); printf '  %-8s %s\n' "$1" "$2"; }
@@ -121,7 +119,7 @@ section "Part 1: Azure foundation"
 
 # Deploy identities only hold resource-group roles, so Terraform's providers run with
 # resource_provider_registrations = "none"; register what the roots use once, here.
-for namespace in Microsoft.App Microsoft.OperationalInsights Microsoft.Sql Microsoft.KeyVault \
+for namespace in Microsoft.App Microsoft.OperationalInsights Microsoft.KeyVault \
   Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.Storage; do
   if [[ "$(az provider show -n "$namespace" --query registrationState -o tsv)" == "Registered" ]]; then
     record exists "provider $namespace"
@@ -233,7 +231,7 @@ ensure_federation id-misaapp-gh-ci gh-pull-request pull_request
 for env in "${ENVIRONMENTS[@]}"; do
   ensure_federation id-misaapp-gh-ci "gh-${BRANCH[$env]}" "ref:refs/heads/${BRANCH[$env]}"
 done
-# Its nonprod SQL, Key Vault and AcrPull roles are assigned by infra/shared (part 4).
+# Its AcrPull role on the shared registry is assigned by infra/shared (part 4).
 
 ensure_identity id-misaapp-gh-build
 for env in "${ENVIRONMENTS[@]}"; do
@@ -274,10 +272,7 @@ dev_deploy="${PRINCIPAL_ID[id-misaapp-gh-deploy-develop]}"
 ensure_role "$dev_deploy" ServicePrincipal Contributor "$SHARED_SCOPE"
 ensure_role "$dev_deploy" ServicePrincipal "Storage Blob Data Contributor" "$(container_scope tfstate-shared)"
 ensure_role "$dev_deploy" ServicePrincipal "Role Based Access Control Administrator" "$SHARED_SCOPE" \
-  "$(rbac_condition "$ROLE_ACR_PULL" "$ROLE_KV_SECRETS_USER" "$ROLE_SQL_DB_CONTRIBUTOR" "$ROLE_SQL_SERVER_CONTRIBUTOR")"
-# Writes and refreshes sql-admin-password. Granted here rather than in Terraform so the role isn't
-# swapped between the admin (first apply) and this identity on every apply.
-ensure_role "$dev_deploy" ServicePrincipal "Key Vault Secrets Officer" "$SHARED_SCOPE"
+  "$(rbac_condition "$ROLE_ACR_PULL" "$ROLE_KV_SECRETS_USER")"
 
 # ---------------------------------------------------------------------------------------------
 section "Part 3: GitHub settings ($REPO)"
@@ -386,7 +381,6 @@ before=${#SUMMARY[@]}
 for container in tfstate-shared tfstate-develop tfstate-stage tfstate-production; do
   ensure_role "$ADMIN_ID" "$ADMIN_TYPE" "Storage Blob Data Contributor" "$(container_scope "$container")"
 done
-ensure_role "$ADMIN_ID" "$ADMIN_TYPE" "Key Vault Secrets Officer" "$SHARED_SCOPE"
 if printf '%s\n' "${SUMMARY[@]:before}" | grep -q '^created'; then
   echo "  waiting 90 s for the new data-plane roles to propagate..."
   sleep 90
@@ -427,7 +421,7 @@ terraform -chdir="$SHARED_DIR" apply \
   -var "location=$LOCATION" -var "suffix=$SUFFIX" -var "ci_principal_id=${PRINCIPAL_ID[id-misaapp-gh-ci]}"
 record ensured "infra/shared applied"
 
-# Design correction 7: each environment's deploy identity grants its API/migrator identities AcrPull
+# Design correction 7: each environment's deploy identity grants its API identity AcrPull
 # on the shared registry; allow exactly that role on exactly that resource.
 ACR_ID=$(az acr show -n "$ACR_NAME" -g "$SHARED_RG" --query id -o tsv)
 for env in stage production; do

@@ -347,7 +347,7 @@ jobs:
             exit 1
           fi
 
-      # 3. Shared registry, nonprod SQL and Key Vault follow develop.
+      # 3. Shared registry follows develop.
       - name: Apply infra/shared
         if: steps.guard.outputs.superseded != 'true' && github.event_name == 'push' && env.ENVIRONMENT == 'develop'
         working-directory: infra/shared

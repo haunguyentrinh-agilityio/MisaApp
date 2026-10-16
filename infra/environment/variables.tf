@@ -14,7 +14,7 @@ variable "location" {
 }
 
 variable "suffix" {
-  description = "Global-uniqueness suffix for SQL server and Key Vault names."
+  description = "Global-uniqueness suffix for Key Vault names."
   type        = string
 
   validation {
@@ -36,23 +36,6 @@ variable "image_tag" {
 variable "acr_name" {
   description = "Name of the shared container registry in rg-misaapp-shared."
   type        = string
-}
-
-variable "sql_sku" {
-  description = "Database SKU, e.g. GP_S_Gen5_1 (serverless) or S0."
-  type        = string
-}
-
-variable "sql_auto_pause_minutes" {
-  description = "Serverless auto-pause delay in minutes; -1 disables. Ignored for non-serverless SKUs."
-  type        = number
-  default     = -1
-}
-
-variable "sql_use_free_offer" {
-  description = "Create the database with the Azure SQL free offer. Only takes effect at creation; flipping it replaces the database."
-  type        = bool
-  default     = false
 }
 
 variable "web_min_replicas" {

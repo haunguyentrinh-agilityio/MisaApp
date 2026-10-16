@@ -63,14 +63,6 @@ resource "azurerm_container_app" "api" {
         value = "Production"
       }
       env {
-        name  = "ConnectionStrings__Default"
-        value = "Server=tcp:${azurerm_mssql_server.main.fully_qualified_domain_name},1433;Database=${local.sql_database_name};Authentication=Active Directory Managed Identity;User Id=${azurerm_user_assigned_identity.api.client_id};Encrypt=True"
-      }
-      env {
-        name  = "Database__MigrateOnStartup"
-        value = "false"
-      }
-      env {
         name  = "Gemini__Model"
         value = var.gemini_model
       }
@@ -84,16 +76,6 @@ resource "azurerm_container_app" "api" {
           name        = "Gemini__ApiKey"
           secret_name = "gemini-api-key"
         }
-      }
-
-      # /api/health includes the database; a paused serverless database takes up to a minute to
-      # resume, so startup tolerates about 120 s.
-      startup_probe {
-        transport               = "HTTP"
-        path                    = "/api/health"
-        port                    = 8080
-        interval_seconds        = 12
-        failure_count_threshold = 10
       }
 
       readiness_probe {

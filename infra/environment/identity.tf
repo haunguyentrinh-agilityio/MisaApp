@@ -1,7 +1,6 @@
 # One identity per workload, so each holds only what it needs:
-#   api      AcrPull, Key Vault Secrets User, database reader/writer (granted by the former migrate job)
-#   web      AcrPull only (nginx never gets a token that could read Key Vault)
-#   migrator Entra admin of the SQL server; removed with the database (specs/003-remove-chat-database)
+#   api  AcrPull, Key Vault Secrets User
+#   web  AcrPull only (nginx never gets a token that could read Key Vault)
 resource "azurerm_user_assigned_identity" "api" {
   name                = local.api_identity_name
   resource_group_name = data.azurerm_resource_group.env.name
@@ -11,13 +10,6 @@ resource "azurerm_user_assigned_identity" "api" {
 
 resource "azurerm_user_assigned_identity" "web" {
   name                = local.web_identity_name
-  resource_group_name = data.azurerm_resource_group.env.name
-  location            = var.location
-  tags                = local.tags
-}
-
-resource "azurerm_user_assigned_identity" "migrator" {
-  name                = local.migrator_identity_name
   resource_group_name = data.azurerm_resource_group.env.name
   location            = var.location
   tags                = local.tags
